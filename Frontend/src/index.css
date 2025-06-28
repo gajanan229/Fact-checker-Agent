@@ -1,0 +1,101 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.veritas-gradient {
+  background: linear-gradient(135deg, #1A202C 0%, #2D3748 50%, #1A202C 100%);
+}
+
+.veritas-card {
+  background: rgba(45, 55, 72, 0.6);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(56, 178, 172, 0.1);
+}
+
+.veritas-input {
+  background: rgba(26, 32, 44, 0.8);
+  border: 1px solid rgba(56, 178, 172, 0.3);
+  transition: all 0.3s ease;
+}
+
+.veritas-input:focus {
+  border-color: #38B2AC;
+  box-shadow: 0 0 0 3px rgba(56, 178, 172, 0.1);
+}
+
+.veritas-button {
+  background: linear-gradient(135deg, #38B2AC 0%, #319795 100%);
+  transition: all 0.3s ease;
+}
+
+.veritas-button:hover {
+  background: linear-gradient(135deg, #319795 0%, #2C7A7B 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(56, 178, 172, 0.3);
+}
+
+.veritas-secondary-button {
+  background: rgba(56, 178, 172, 0.1);
+  border: 1px solid rgba(56, 178, 172, 0.3);
+  color: #38B2AC;
+  transition: all 0.3s ease;
+}
+
+.veritas-secondary-button:hover {
+  background: rgba(56, 178, 172, 0.2);
+  border-color: #38B2AC;
+}
+
+.chat-message {
+  animation: slideInUp 0.3s ease-out;
+}
+
+@keyframes slideInUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.progress-checkmark {
+  animation: checkmarkAppear 0.5s ease-out;
+}
+
+@keyframes checkmarkAppear {
+  0% {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+  50% {
+    transform: scale(1.1);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.toast {
+  animation: toastSlideIn 0.3s ease-out;
+}
+
+@keyframes toastSlideIn {
+  from {
+    opacity: 0;
+    transform: translateX(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
