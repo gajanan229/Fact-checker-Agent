@@ -33,7 +33,7 @@ const TargetSelector: React.FC<TargetSelectorProps> = ({ onSelect }) => {
         initial={{ opacity: 0, scale: 0.9, y: 20 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.9, y: 20 }}
-        className="veritas-card rounded-xl p-8 max-w-md w-full"
+        className="verifyp-card rounded-xl p-8 max-w-md w-full"
       >
         <div className="flex justify-between items-center mb-6">
           <h3 className="text-xl font-bold text-gray-100">Select Investigation Target</h3>
@@ -98,7 +98,7 @@ const TargetSelector: React.FC<TargetSelectorProps> = ({ onSelect }) => {
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               placeholder="@username"
-              className="w-full px-3 py-2 veritas-input text-gray-100 rounded-lg focus:outline-none"
+              className="w-full px-3 py-2 verifyp-input text-gray-100 rounded-lg focus:outline-none"
             />
           </motion.div>
         )}
@@ -106,14 +106,14 @@ const TargetSelector: React.FC<TargetSelectorProps> = ({ onSelect }) => {
         <div className="flex space-x-3">
           <button
             onClick={() => setShowModal(false)}
-            className="flex-1 veritas-secondary-button py-2 px-4 rounded-lg font-medium"
+            className="flex-1 verifyp-secondary-button py-2 px-4 rounded-lg font-medium"
           >
             Cancel
           </button>
           <button
             onClick={handleConfirm}
             disabled={!selectedType || (selectedType === 'comment' && !username.trim())}
-            className="flex-1 veritas-button text-white py-2 px-4 rounded-lg font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex-1 verifyp-button text-white py-2 px-4 rounded-lg font-medium disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Confirm
           </button>

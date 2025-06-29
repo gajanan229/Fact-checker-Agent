@@ -16,7 +16,7 @@ const RedTeamLog: React.FC<RedTeamLogProps> = ({ critique }) => {
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="veritas-card rounded-xl p-6"
+      className="verifyp-card rounded-xl p-6"
     >
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center space-x-3">

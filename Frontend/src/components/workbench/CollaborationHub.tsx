@@ -37,7 +37,7 @@ const CollaborationHub: React.FC<CollaborationHubProps> = ({ onMessage, isRefini
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="veritas-card rounded-xl p-6"
+      className="verifyp-card rounded-xl p-6"
     >
       <div className="flex items-center space-x-3 mb-4">
         <MessageSquare className="w-5 h-5 text-teal-400" />
@@ -80,13 +80,13 @@ const CollaborationHub: React.FC<CollaborationHubProps> = ({ onMessage, isRefini
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           placeholder={isRefining ? "Processing your request..." : "Make the tone more direct"}
-          className="flex-1 px-4 py-2 veritas-input text-gray-100 rounded-lg focus:outline-none"
+          className="flex-1 px-4 py-2 verifyp-input text-gray-100 rounded-lg focus:outline-none"
           disabled={isRefining}
         />
         <button
           type="submit"
           disabled={!message.trim() || isRefining}
-          className="veritas-button text-white p-2 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+          className="verifyp-button text-white p-2 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
         >
           {isRefining ? (
             <Loader2 className="w-5 h-5 animate-spin" />

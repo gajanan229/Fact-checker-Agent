@@ -23,7 +23,7 @@ const URLInputForm: React.FC<URLInputFormProps> = ({ onSubmit, isSubmitting }) =
       animate={{ opacity: 1, y: 0 }}
       className="max-w-2xl mx-auto"
     >
-      <div className="veritas-card rounded-xl p-8">
+      <div className="verifyp-card rounded-xl p-8">
         <div className="text-center mb-8">
           <div className="w-16 h-16 bg-gradient-to-br from-teal-400 to-teal-600 rounded-xl flex items-center justify-center mx-auto mb-4">
             <Link className="w-8 h-8 text-white" />
@@ -43,7 +43,7 @@ const URLInputForm: React.FC<URLInputFormProps> = ({ onSubmit, isSubmitting }) =
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               placeholder="https://www.tiktok.com/@username/video/..."
-              className="w-full px-4 py-3 veritas-input text-gray-100 rounded-lg focus:outline-none"
+              className="w-full px-4 py-3 verifyp-input text-gray-100 rounded-lg focus:outline-none"
               disabled={isSubmitting}
               required
             />
@@ -52,7 +52,7 @@ const URLInputForm: React.FC<URLInputFormProps> = ({ onSubmit, isSubmitting }) =
           <motion.button
             type="submit"
             disabled={isSubmitting || !url.trim()}
-            className="w-full veritas-button text-white font-semibold py-3 px-6 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+            className="w-full verifyp-button text-white font-semibold py-3 px-6 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
             whileHover={!isSubmitting ? { scale: 1.02 } : {}}
             whileTap={!isSubmitting ? { scale: 0.98 } : {}}
           >

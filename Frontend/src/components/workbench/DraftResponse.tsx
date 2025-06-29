@@ -12,7 +12,7 @@ const DraftResponse: React.FC<DraftResponseProps> = ({ response, isRefining }) =
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="veritas-card rounded-xl p-6"
+      className="verifyp-card rounded-xl p-6"
     >
       <div className="flex items-center space-x-3 mb-4">
         <FileText className="w-5 h-5 text-teal-400" />

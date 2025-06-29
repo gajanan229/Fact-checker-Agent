@@ -11,7 +11,7 @@ const TargetDisplay: React.FC<TargetDisplayProps> = ({ videoUrl }) => {
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="veritas-card rounded-xl p-6"
+      className="verifyp-card rounded-xl p-6"
     >
       <h3 className="text-lg font-semibold text-gray-100 mb-4">Investigation Target</h3>
       

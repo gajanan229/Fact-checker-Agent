@@ -70,7 +70,7 @@ const EvidenceLocker: React.FC<EvidenceLockerProps> = ({ claims, dossier }) => {
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="veritas-card rounded-xl p-6"
+      className="verifyp-card rounded-xl p-6"
     >
       <h3 className="text-lg font-semibold text-gray-100 mb-4">Evidence Locker</h3>
       

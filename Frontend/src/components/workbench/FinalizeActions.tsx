@@ -11,7 +11,7 @@ const FinalizeActions: React.FC<FinalizeActionsProps> = ({ onCopyToClipboard }) 
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="veritas-card rounded-xl p-6"
+      className="verifyp-card rounded-xl p-6"
     >
       <h3 className="text-lg font-semibold text-gray-100 mb-4">Finalize & Deploy</h3>
       
@@ -22,7 +22,7 @@ const FinalizeActions: React.FC<FinalizeActionsProps> = ({ onCopyToClipboard }) 
       <div className="flex flex-col sm:flex-row gap-3">
         <motion.button
           onClick={onCopyToClipboard}
-          className="flex-1 veritas-button text-white font-semibold py-3 px-6 rounded-lg flex items-center justify-center space-x-2"
+          className="flex-1 verifyp-button text-white font-semibold py-3 px-6 rounded-lg flex items-center justify-center space-x-2"
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
         >
@@ -31,7 +31,7 @@ const FinalizeActions: React.FC<FinalizeActionsProps> = ({ onCopyToClipboard }) 
         </motion.button>
 
         <motion.button
-          className="veritas-secondary-button font-medium py-3 px-6 rounded-lg flex items-center justify-center space-x-2"
+          className="verifyp-secondary-button font-medium py-3 px-6 rounded-lg flex items-center justify-center space-x-2"
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
         >
@@ -40,7 +40,7 @@ const FinalizeActions: React.FC<FinalizeActionsProps> = ({ onCopyToClipboard }) 
         </motion.button>
 
         <motion.button
-          className="veritas-secondary-button font-medium py-3 px-6 rounded-lg flex items-center justify-center space-x-2"
+          className="verifyp-secondary-button font-medium py-3 px-6 rounded-lg flex items-center justify-center space-x-2"
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
         >

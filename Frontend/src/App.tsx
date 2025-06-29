@@ -7,7 +7,7 @@ import './index.css';
 function App() {
   return (
     <Router>
-      <div className="min-h-screen veritas-gradient">
+      <div className="min-h-screen verifyp-gradient">
         <Routes>
           <Route path="/" element={<LandingPage />} />
           <Route path="/workbench" element={<WorkbenchPage />} />

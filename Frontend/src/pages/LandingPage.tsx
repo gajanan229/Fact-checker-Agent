@@ -43,7 +43,7 @@ const LandingPage: React.FC = () => {
             <div className="w-10 h-10 bg-gradient-to-br from-teal-400 to-teal-600 rounded-lg flex items-center justify-center">
               <Shield className="w-6 h-6 text-white" />
             </div>
-            <span className="text-2xl font-bold text-gray-100">Veritas AI</span>
+            <span className="text-2xl font-bold text-gray-100">VeriFYP</span>
           </div>
         </div>
       </motion.header>
@@ -67,7 +67,7 @@ const LandingPage: React.FC = () => {
             transition={{ duration: 0.8, delay: 0.4 }}
             className="text-xl text-gray-300 mb-12 leading-relaxed max-w-3xl mx-auto"
           >
-            Veritas AI is your intelligent fact-checking partner for TikTok content. Investigate claims, verify information with credible sources, and craft well-reasoned responses to combat misinformation constructively.
+            VeriFYP is your intelligent fact-checking partner for TikTok content. Investigate claims, verify information with credible sources, and craft well-reasoned responses to combat misinformation constructively.
           </motion.p>
 
           <motion.button
@@ -75,7 +75,7 @@ const LandingPage: React.FC = () => {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.8, delay: 0.6 }}
             onClick={() => navigate('/workbench')}
-            className="veritas-button text-white font-semibold py-4 px-8 rounded-lg text-lg shadow-lg"
+            className="verifyp-button text-white font-semibold py-4 px-8 rounded-lg text-lg shadow-lg"
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
           >
@@ -93,7 +93,7 @@ const LandingPage: React.FC = () => {
             transition={{ duration: 0.8, delay: 0.8 }}
             className="text-3xl font-bold text-gray-100 text-center mb-12"
           >
-            How Veritas AI Works
+            How VeriFYP Works
           </motion.h2>
           
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
@@ -103,7 +103,7 @@ const LandingPage: React.FC = () => {
                 initial={{ opacity: 0, y: 30 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.6, delay: 1 + index * 0.1 }}
-                className="veritas-card rounded-xl p-6 text-center"
+                className="verifyp-card rounded-xl p-6 text-center"
               >
                 <div className="text-teal-400 mb-4 flex justify-center">
                   {feature.icon}
@@ -123,7 +123,7 @@ const LandingPage: React.FC = () => {
       {/* Footer */}
       <footer className="px-6 py-8 border-t border-gray-700">
         <div className="max-w-7xl mx-auto text-center text-gray-400">
-          <p>&copy; 2025 Veritas AI. Empowering truth through technology.</p>
+          <p>&copy; 2025 VeriFYP. Empowering truth through technology.</p>
         </div>
       </footer>
     </div>
