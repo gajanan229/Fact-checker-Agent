@@ -77,7 +77,7 @@ class GeneratedResponse(BaseModel):
     
     key_points: List[str] = Field(
         description="Main factual points addressed in the response",
-        max_length=8
+        max_length=15
     )
     
     sources_cited: List[str] = Field(
