@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field, field_validator
 # Internal imports
 from ..core.state import GraphState, Claim, Source, ClaimStatus, ResponseQuality, Critique
 from ..nodes.response_generation import LLMManager, ResponseGenerationError
+from ..utils.api_usage import api_usage_manager, APIUsageError
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -253,47 +254,37 @@ Be thorough but fair - not every difference in perspective constitutes harmful b
             CritiqueAssessment: Comprehensive evaluation results
         """
         try:
-            logger.info("Starting quality assessment of draft response")
+            # Check Gemini API usage limits
+            api_usage_manager.check_and_increment_gemini()
             
-            # Prepare evaluation context
-            response_context = self._prepare_response_context(draft_response, claims, sources or [])
+            system_prompt = self._create_critique_system_prompt()
+            response_context = self._prepare_response_context(draft_response, claims, sources)
             
-            # Create critique prompt
-            critique_prompt = ChatPromptTemplate.from_messages([
-                ("system", self._create_critique_system_prompt()),
-                ("human", """Please evaluate this fact-checking response comprehensively:
+            user_prompt = f"""Please provide a comprehensive critique of the response based on the provided claims and evidence.
 
 {response_context}
-
-Provide a thorough assessment including:
-1. Quality scores for each dimension (0.0 to 1.0)
-2. Specific improvement recommendations
-3. Overall quality assessment
-4. Critical issues (if any)
-5. Response strengths
-
-Be thorough but constructive in your critique.""")
+"""
+            
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", system_prompt),
+                ("human", user_prompt)
             ])
             
-            # Set up LLM chain
-            llm = self.llm_manager.get_llm()
             parser = PydanticOutputParser(pydantic_object=CritiqueAssessment)
+            prompt = prompt.partial(format_instructions=parser.get_format_instructions())
             
-            # Add format instructions to prompt
-            critique_prompt = critique_prompt.partial(format_instructions=parser.get_format_instructions())
+            llm = self.llm_manager.get_llm()
+            chain = prompt | llm | parser
             
-            # Execute critique
-            chain = critique_prompt | llm | parser
-            assessment = chain.invoke({
-                "response_context": response_context
-            })
-            
-            logger.info(f"Quality assessment completed with overall score: {assessment.overall_quality_score}")
+            assessment = await chain.ainvoke({})
             return assessment
             
+        except APIUsageError as e:
+            logger.error(f"API limit reached for Gemini in quality assessment: {e}")
+            raise AdversarialReviewError(str(e))
         except Exception as e:
-            logger.error(f"Error in quality assessment: {e}")
-            raise AdversarialReviewError(f"Quality assessment failed: {e}")
+            logger.error(f"Quality assessment failed: {e}", exc_info=True)
+            raise AdversarialReviewError(f"Failed to conduct quality assessment: {e}")
 
     async def detect_biases(self, draft_response: str) -> List[BiasDetection]:
         """
@@ -306,44 +297,33 @@ Be thorough but constructive in your critique.""")
             List[BiasDetection]: Detected biases and mitigation strategies
         """
         try:
-            logger.info("Starting bias detection analysis")
+            # Check Gemini API usage limits
+            api_usage_manager.check_and_increment_gemini()
             
-            # Create bias detection prompt
-            bias_prompt = ChatPromptTemplate.from_messages([
-                ("system", self._create_bias_detection_prompt()),
-                ("human", """Analyze this fact-checking response for potential biases:
-
-TEXT TO ANALYZE:
-{response_text}
-
-Identify any biases present, their severity, and how to address them. Be thorough but fair in your analysis.""")
-            ])
+            system_prompt = self._create_bias_detection_prompt()
             
-            # Set up LLM for bias detection
-            llm = self.llm_manager.get_llm()
-            
-            # Create a simpler model for bias detection results
             class BiasDetectionResults(BaseModel):
                 detected_biases: List[BiasDetection] = Field(default_factory=list)
             
             parser = PydanticOutputParser(pydantic_object=BiasDetectionResults)
-            bias_prompt = bias_prompt.partial(format_instructions=parser.get_format_instructions())
             
-            # Execute bias detection
-            chain = bias_prompt | llm | parser
-            results = chain.invoke({"response_text": draft_response})
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", system_prompt),
+                ("human", "Analyze this text: {draft_response}")
+            ]).partial(format_instructions=parser.get_format_instructions())
             
-            significant_biases = [
-                bias for bias in results.detected_biases 
-                if bias.severity >= self.bias_severity_threshold
-            ]
+            llm = self.llm_manager.get_llm()
+            chain = prompt | llm | parser
             
-            logger.info(f"Bias detection completed. Found {len(significant_biases)} significant biases")
-            return significant_biases
+            results = await chain.ainvoke({"draft_response": draft_response})
+            return results.detected_biases
             
+        except APIUsageError as e:
+            logger.error(f"API limit reached for Gemini in bias detection: {e}")
+            raise BiasDetectionError(str(e))
         except Exception as e:
-            logger.error(f"Error in bias detection: {e}")
-            raise BiasDetectionError(f"Bias detection failed: {e}")
+            logger.error(f"Bias detection failed: {e}", exc_info=True)
+            raise BiasDetectionError(f"Failed to detect biases: {e}")
 
     def generate_revision_recommendations(self, assessment: CritiqueAssessment) -> List[RevisionRecommendation]:
         """

@@ -18,6 +18,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 
 from ..core.state import GraphState, Claim, ClaimStatus
 from ..core.validation import ValidationError
+from ..utils.api_usage import api_usage_manager, APIUsageError
 
 
 # Configure logging
@@ -183,6 +184,9 @@ Extract all verifiable factual claims from this content."""
                     has_verifiable_claims=False
                 )
             
+            # Check Gemini API usage limits
+            api_usage_manager.check_and_increment_gemini()
+            
             # Create the chain and invoke
             chain = self.prompt_template | self.llm | self.parser
             result = await chain.ainvoke({
@@ -193,6 +197,9 @@ Extract all verifiable factual claims from this content."""
             logger.info(f"Extracted {len(result.claims)} claims from {content_source}")
             return result
             
+        except APIUsageError as e:
+            logger.error(f"API limit reached for Gemini in claim identification: {e}")
+            raise ValidationError("api_limit", str(e))
         except Exception as e:
             logger.error(f"Claim extraction failed: {e}")
             return ClaimExtractionResult(

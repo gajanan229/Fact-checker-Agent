@@ -11,6 +11,7 @@ from flask_cors import CORS
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
 from .manager import AnalysisManager
+from ..utils.api_usage import api_usage_manager
 
 # Initialize the analysis manager singleton
 manager = AnalysisManager()
@@ -26,6 +27,11 @@ def create_app():
     def health_check():
         """Health check endpoint to confirm the server is running."""
         return jsonify({"status": "healthy"}), 200
+
+    @app.route('/api/limits/status', methods=['GET'])
+    def limits_status():
+        """Returns the current status of API usage limits."""
+        return jsonify(api_usage_manager.get_limits_status()), 200
 
     @app.route('/api/analyze', methods=['POST'])
     def analyze_video():

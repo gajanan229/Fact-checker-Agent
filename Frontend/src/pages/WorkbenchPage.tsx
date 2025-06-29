@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { AlertTriangle } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import URLInputForm from '../components/workbench/URLInputForm';
 import AnalysisStatus from '../components/workbench/AnalysisStatus';
 import CaseFileDashboard from '../components/workbench/CaseFileDashboard';
@@ -34,6 +36,7 @@ interface CaseFile {
   critique: Critique | Record<string, never>;
   draft_response: string;
   final_response: string;
+  error_message?: string;
 }
 
 // Analysis progress steps
@@ -55,6 +58,12 @@ const API_BASE_URL = "http://localhost:8000";
 
 type AppStatus = 'idle' | 'submitting' | 'analyzing' | 'results_displayed' | 'refining' | 'error';
 
+interface ApiLimits {
+  apify_limit_reached: boolean;
+  tavily_limit_reached: boolean;
+  gemini_daily_limit_reached: boolean;
+}
+
 interface WorkbenchState {
   appStatus: AppStatus;
   videoUrl: string;
@@ -62,17 +71,37 @@ interface WorkbenchState {
   caseFile: CaseFile | null;
   progressSteps: ProgressStep[];
   errorMessage: string;
+  apiLimits: ApiLimits | null;
 }
 
 const WorkbenchPage: React.FC = () => {
+  const navigate = useNavigate();
   const [state, setState] = useState<WorkbenchState>({
     appStatus: 'idle',
     videoUrl: '',
     sessionId: null,
     caseFile: null,
     progressSteps: initialProgressSteps,
-    errorMessage: ''
+    errorMessage: '',
+    apiLimits: null,
   });
+
+  // Effect to fetch API limits
+  useEffect(() => {
+    const fetchApiLimits = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/limits/status`);
+        if (response.ok) {
+          const data = await response.json();
+          setState(prev => ({ ...prev, apiLimits: data }));
+        }
+      } catch (error) {
+        console.error("Failed to fetch API limits:", error);
+      }
+    };
+
+    fetchApiLimits();
+  }, []);
 
   // Effect to manage the EventSource connection for status updates
   useEffect(() => {
@@ -104,11 +133,29 @@ const WorkbenchPage: React.FC = () => {
     // Listener for 'complete' event
     eventSource.addEventListener('complete', (event) => {
       const eventData = JSON.parse(event.data);
-      setState(prev => ({
-        ...prev,
-        appStatus: 'results_displayed',
-        caseFile: eventData.caseFile as CaseFile
-      }));
+      const caseFile = eventData.caseFile as CaseFile;
+
+      if (caseFile && caseFile.error_message) {
+        setState(prev => ({
+          ...prev,
+          appStatus: 'error',
+          errorMessage: caseFile.error_message || 'An unknown error occurred.',
+          caseFile: null
+        }));
+      } else if (caseFile && caseFile.draft_response) {
+        setState(prev => ({
+          ...prev,
+          appStatus: 'results_displayed',
+          caseFile: caseFile
+        }));
+      } else {
+        setState(prev => ({
+            ...prev,
+            appStatus: 'error',
+            errorMessage: 'Could not generate a response. This may happen if no verifiable claims were found or if an internal system error occurred.',
+            caseFile: null
+        }));
+      }
       eventSource.close();
     });
 
@@ -154,8 +201,14 @@ const WorkbenchPage: React.FC = () => {
     };
   }, [state.appStatus, state.sessionId]);
 
+  const isLimitReached = state.apiLimits ? 
+    state.apiLimits.apify_limit_reached || 
+    state.apiLimits.tavily_limit_reached || 
+    state.apiLimits.gemini_daily_limit_reached 
+    : false;
 
   const handleUrlSubmit = async (url: string) => {
+    if (isLimitReached) return;
     setState(prev => ({ ...prev, videoUrl: url, appStatus: 'submitting' }));
 
     try {
@@ -211,10 +264,25 @@ const WorkbenchPage: React.FC = () => {
       case 'idle':
       case 'submitting':
         return (
-          <URLInputForm 
-            onSubmit={handleUrlSubmit}
-            isSubmitting={state.appStatus === 'submitting'}
-          />
+          <div className="relative">
+            <URLInputForm 
+              onSubmit={handleUrlSubmit}
+              isSubmitting={state.appStatus === 'submitting'}
+            />
+            {isLimitReached && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="absolute inset-0 bg-gray-900 bg-opacity-80 flex flex-col items-center justify-center rounded-xl"
+              >
+                <AlertTriangle className="w-10 h-10 text-yellow-400 mb-4" />
+                <h3 className="text-xl font-bold text-gray-100 mb-2">Service Temporarily Unavailable</h3>
+                <p className="text-yellow-300">
+                  Daily usage limits have been reached. Please try again tomorrow.
+                </p>
+              </motion.div>
+            )}
+          </div>
         );
       case 'analyzing':
         return <AnalysisStatus steps={state.progressSteps} />;
@@ -234,10 +302,23 @@ const WorkbenchPage: React.FC = () => {
         return null; // Or some fallback UI
       case 'error':
         return (
-          <div className="text-center text-red-400">
-            <h2 className="text-2xl font-bold">An Error Occurred</h2>
-            <p>{state.errorMessage}</p>
-          </div>
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="text-center verifyp-card rounded-xl p-8 max-w-2xl mx-auto"
+          >
+            <AlertTriangle className="w-12 h-12 text-red-400 mx-auto mb-4" />
+            <h2 className="text-2xl font-bold text-gray-100 mb-2">Analysis Complete</h2>
+            <p className="text-red-300 mb-6">{state.errorMessage}</p>
+            <motion.button
+              onClick={() => navigate('/')}
+              className="verifyp-button text-white font-semibold py-3 px-6 rounded-lg"
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+            >
+              Try Another Video
+            </motion.button>
+          </motion.div>
         );
       default:
         return null;

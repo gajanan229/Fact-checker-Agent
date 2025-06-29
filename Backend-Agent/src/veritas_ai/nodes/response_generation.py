@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field, field_validator
 
 # Internal imports
 from ..core.state import GraphState, Claim, Source, ClaimStatus, ResponseQuality
+from ..utils.api_usage import api_usage_manager, APIUsageError
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -221,12 +222,16 @@ class ResponseGenerator:
         user_preferences = user_preferences or {}
         tone = ResponseTone(user_preferences.get('response_tone', 'educational'))
         
-        # Create prompts
-        system_prompt = self._create_system_prompt(tone)
-        claims_summary = self._prepare_claims_summary(claims)
-        evidence_summary = self._prepare_evidence_summary(claims)
-        
-        user_prompt = f"""Content Summary:
+        try:
+            # Check Gemini API usage limits
+            api_usage_manager.check_and_increment_gemini()
+            
+            # Create prompts
+            system_prompt = self._create_system_prompt(tone)
+            claims_summary = self._prepare_claims_summary(claims)
+            evidence_summary = self._prepare_evidence_summary(claims)
+            
+            user_prompt = f"""Content Summary:
 {content_summary}
 
 Claims to address:
@@ -240,24 +245,23 @@ Please provide a constructive response that:
 2. Uses the provided sources for citations (reference as [SOURCE_X])
 3. Maintains a respectful, educational tone
 4. Is approximately 100-200 words"""
-        
-        # Create prompt template
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", system_prompt),
-            ("human", user_prompt)
-        ])
-        
-        # Get LLM
-        llm = self.llm_manager.get_llm()
-        
-        # Set up structured output
-        structured_llm = llm.with_structured_output(GeneratedResponse)
-        
-        # Create chain
-        chain = prompt | structured_llm
-        
-        # Generate response
-        try:
+            
+            # Create prompt template
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", system_prompt),
+                ("human", user_prompt)
+            ])
+            
+            # Get LLM
+            llm = self.llm_manager.get_llm()
+            
+            # Set up structured output
+            structured_llm = llm.with_structured_output(GeneratedResponse)
+            
+            # Create chain
+            chain = prompt | structured_llm
+            
+            # Generate response
             logger.info("Generating response with LLM")
             response = await chain.ainvoke({})
             
@@ -266,8 +270,11 @@ Please provide a constructive response that:
             logger.info("Successfully generated response")
             return response
             
+        except APIUsageError as e:
+            logger.error(f"API limit reached for Gemini in response generation: {e}")
+            raise ResponseGenerationError(str(e))
         except Exception as e:
-            logger.error(f"Response generation failed: {e}")
+            logger.error(f"Response generation failed: {e}", exc_info=True)
             raise ResponseGenerationError(f"Failed to generate response: {e}")
     
     def _apply_citation_formatting(
@@ -300,114 +307,56 @@ Please provide a constructive response that:
 # Main node functions for LangGraph integration
 async def generate_response(state: GraphState) -> GraphState:
     """
-    LangGraph node function to generate fact-checking response.
-    
-    Args:
-        state: Current graph state containing claims with research
-        
-    Returns:
-        Updated state with generated response
+    Main LangGraph node for generating fact-checking responses.
     """
+    logger.info(f"Starting response generation for session {state['session_id']}")
+    
     try:
-        logger.info(f"Starting response generation for session {state.get('session_id')}")
-        
-        # Validate prerequisites
         claims = state.get('claims', [])
-        if not claims:
-            logger.warning("No claims available for response generation")
+        
+        # If no verifiable claims were found, we cannot generate a response.
+        if not claims or all(c.get('status') == ClaimStatus.UNVERIFIABLE for c in claims):
+            logger.warning("No verifiable claims available for response generation. Ending workflow.")
             return {
-                **state,
-                'workflow_stage': 'response_drafted',
-                'status': {
-                    **state.get('status', {}),
-                    'current_step': 'generating_response',
-                    'warnings': [*state.get('status', {}).get('warnings', []), 
-                               "No claims available for response generation"]
-                }
+                "workflow_stage": "failed",
+                "error_message": "No verifiable claims were found in the video. Please try another one."
             }
+
+        content_summary = state.get('raw_content', {}).get('summary', '')
         
-        # Check if claims have been researched
-        researched_claims = [c for c in claims if c.get('sources') and c['status'] != ClaimStatus.PENDING]
-        if not researched_claims:
-            logger.warning("No researched claims available for response generation")
-            return {
-                **state,
-                'workflow_stage': 'response_drafted',
-                'draft_response': "Thank you for sharing this content. I wasn't able to find specific factual claims that could be independently verified at this time.",
-                'status': {
-                    **state.get('status', {}),
-                    'current_step': 'generating_response',
-                    'step_progress': 1.0
-                }
-            }
-        
-        # Prepare content summary
-        raw_content = state.get('raw_content', {})
-        content_parts = []
-        if raw_content.get('transcript'):
-            content_parts.append(f"Video transcript: {raw_content['transcript'][:500]}...")
-        if raw_content.get('ocr_text'):
-            content_parts.append(f"Video text: {raw_content['ocr_text'][:200]}...")
-        if raw_content.get('selected_comment_text'):
-            content_parts.append(f"Comment: {raw_content['selected_comment_text'][:300]}...")
-        
-        content_summary = "\n".join(content_parts) if content_parts else "Content analysis completed."
-        
-        # Get user preferences
-        user_preferences = state.get('user_preferences', {})
-        
-        # Initialize generator
         generator = ResponseGenerator()
-        
+        # For simplicity, we'll just use the first set of preferences found
+        user_preferences = state.get('user_preferences', {})
+
         # Generate response
-        generated_response = await generator.generate_response(
-            researched_claims,
-            content_summary,
-            user_preferences
-        )
-        
-        # Prepare response metadata
-        response_metadata = {
-            'generation_timestamp': datetime.now(timezone.utc).isoformat(),
-            'claims_addressed': len(researched_claims),
-            'sources_cited': len(generated_response.sources_cited),
-            'confidence_level': generated_response.confidence_level,
-            'llm_provider': generator.llm_manager.primary_provider,
-            'word_count': len(generated_response.response_text.split()),
-            'character_count': len(generated_response.response_text)
-        }
-        
-        # Update state
-        current_time = datetime.now(timezone.utc).isoformat()
-        
-        updated_state = {
-            **state,
-            'draft_response': generated_response.response_text,
-            'response_metadata': response_metadata,
-            'workflow_stage': 'response_drafted',
-            'last_updated': current_time,
-            'status': {
-                **state.get('status', {}),
-                'current_step': 'generating_response',
-                'step_progress': 1.0,
+        try:
+            logger.info("Generating response with LLM")
+            response = await generator.generate_response(
+                claims=claims,
+                content_summary=content_summary,
+                user_preferences=user_preferences
+            )
+            
+            logger.info(f"Successfully generated draft response with confidence: {response.confidence_level}")
+            
+            # Update state
+            return {
+                "draft_response": response.response_text,
+                "response_quality": {
+                    "confidence_level": response.confidence_level,
+                    "tone_assessment": response.tone_assessment.value,
+                    "key_points": response.key_points
+                },
+                "workflow_stage": "response_generated"
             }
-        }
-        
-        logger.info("Successfully generated response")
-        return updated_state
-        
+            
+        except ResponseGenerationError as e:
+            logger.error(f"Response generation failed: {e}")
+            return {"error_message": str(e), "workflow_stage": "failed"}
+            
     except Exception as e:
-        logger.error(f"Response generation failed: {e}")
-        return {
-            **state,
-            'workflow_stage': 'failed',
-            'error_message': f"Response generation failed: {str(e)}",
-            'status': {
-                **state.get('status', {}),
-                'current_step': 'generating_response',
-                'error_count': state.get('status', {}).get('error_count', 0) + 1
-            }
-        }
+        logger.error(f"An unexpected error occurred in generate_response: {e}", exc_info=True)
+        return {"error_message": "An unexpected error occurred during response generation.", "workflow_stage": "failed"}
 
 
 def generate_response_sync(state: GraphState) -> GraphState:

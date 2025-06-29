@@ -26,6 +26,7 @@ from langchain_core.runnables import RunnableConfig
 # Internal imports
 from ..core.state import GraphState, RawContent
 from ..core.validation import ValidationError
+from ..utils.api_usage import api_usage_manager, APIUsageError
 
 
 logger = logging.getLogger(__name__)
@@ -137,6 +138,9 @@ class ApifyTranscriber:
         """
         logger.info(f"Requesting transcript for {video_url} from Apify.")
         try:
+            # Check API usage limit before making the call
+            api_usage_manager.check_and_increment_apify()
+            
             actor_run = self.client.actor(self.ACTOR_ID).call(
                 run_input={"videos": [video_url]}
             )
@@ -156,6 +160,9 @@ class ApifyTranscriber:
             logger.info(f"Successfully retrieved transcript for {video_url}.")
             return transcript
         
+        except APIUsageError as e:
+            logger.error(f"API limit reached for Apify: {e}")
+            raise ContentIngestionError(str(e))
         except Exception as e:
             logger.error(f"Apify transcription failed for {video_url}: {e}")
             raise ContentIngestionError(f"Failed to get transcript from Apify: {e}")
@@ -209,9 +216,15 @@ class TranscriptCleaner:
             return ""
         
         logger.info("Sending raw transcript to Gemini for cleaning.")
-        cleaned_transcript = await self.chain.ainvoke({"raw_transcript": raw_transcript})
-        logger.info("Successfully cleaned transcript.")
-        return cleaned_transcript.strip()
+        try:
+            # Check Gemini API usage limits
+            api_usage_manager.check_and_increment_gemini()
+            cleaned_transcript = await self.chain.ainvoke({"raw_transcript": raw_transcript})
+            logger.info("Successfully cleaned transcript.")
+            return cleaned_transcript.strip()
+        except APIUsageError as e:
+            logger.error(f"API limit reached for Gemini: {e}")
+            raise ContentIngestionError(str(e))
 
 
 # Main node function for LangGraph

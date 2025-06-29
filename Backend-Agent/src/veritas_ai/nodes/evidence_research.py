@@ -27,6 +27,7 @@ from langchain_core.runnables import RunnableConfig
 # Internal imports
 from ..core.state import GraphState, Claim, Source, ClaimStatus, SourceType
 from ..core.validation import ValidationError
+from ..utils.api_usage import api_usage_manager, APIUsageError
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,9 @@ class EvidenceResearcher:
             query = f"{claim['text']} fact check"
             logger.info(f"Researching claim: {claim['id']} with query: '{query}'")
 
+            # Check Tavily API usage limit
+            api_usage_manager.check_and_increment_tavily()
+
             # Use Tavily's search with answer and raw content
             response = await asyncio.to_thread(
                 self.client.search,
@@ -102,6 +106,10 @@ class EvidenceResearcher:
                 else:
                     updated_claim['status'] = ClaimStatus.RESEARCHING
 
+        except APIUsageError as e:
+            logger.error(f"API limit reached for Tavily: {e}")
+            updated_claim['status'] = ClaimStatus.UNVERIFIABLE
+            updated_claim['evidence_summary'] = f"Research failed due to API limits: {e}"
         except Exception as e:
             logger.error(f"Failed to research claim {claim['id']}: {e}", exc_info=True)
             updated_claim['status'] = ClaimStatus.UNVERIFIABLE
