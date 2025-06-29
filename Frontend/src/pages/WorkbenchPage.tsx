@@ -1,138 +1,246 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import URLInputForm from '../components/workbench/URLInputForm';
-import TargetSelector from '../components/workbench/TargetSelector';
 import AnalysisStatus from '../components/workbench/AnalysisStatus';
 import CaseFileDashboard from '../components/workbench/CaseFileDashboard';
 
-export const mockCaseFileData = {
-  processed_content: {
-    transcript: "In today's video, we're going to explore a health myth. Some people claim that drinking a gallon of celery juice every day can reverse aging. We're going to see if that's true.",
-    ocr_text: "SHOCKING TRUTH: Celery Juice REVERSES AGING!",
-    selected_comment_text: null
-  },
-  claims: [
-    {
-      claim_id: 1,
-      text: "Drinking a gallon of celery juice every day can reverse aging.",
-      status: "verified"
-    },
-    {
-      claim_id: 2,
-      text: "The video also mentions that the earth is banana-shaped as a joke.",
-      status: "verified"
-    }
-  ],
-  dossier: {
-    "1": {
-      verdict: "False",
-      summary: "While celery juice contains vitamins and antioxidants, there is no scientific evidence to support the claim that it can reverse the biological process of aging. This is a common piece of health misinformation.",
-      sources: [
-        { id: 1, url: "https://www.healthline.com/nutrition/celery-juice-benefits", title: "Healthline: Does Celery Juice Have Benefits?" },
-        { id: 2, url: "https://www.medicalnewstoday.com/articles/325759", title: "Medical News Today: What to know about celery juice" }
-      ]
-    },
-    "2": {
-      verdict: "Lacks Context",
-      summary: "The statement 'the earth is banana-shaped' was identified, but appears to be used sarcastically or as a joke within the video's context and is not presented as a serious factual claim.",
-      sources: []
-    }
-  },
-  draft_response: "Regarding the video's claim about celery juice and aging: \n\nBased on current scientific understanding, the claim that drinking celery juice can reverse aging is false. While celery juice is hydrating and contains nutrients, there is no clinical evidence to support such a significant health claim [1]. Health experts generally advise a balanced diet over relying on a single 'superfood' for dramatic results [2].\n\nSources:\n[1] Healthline: Does Celery Juice Have Benefits? (healthline.com)\n[2] Medical News Today: What to know about celery juice (medicalnewstoday.com)",
-  critique: {
-    is_revision_needed: true,
-    feedback_text: "Initial draft was slightly too clinical. Revised to be more direct and accessible for a general audience."
-  }
-};
+// TypeScript Interfaces for API data
+interface Source {
+  id: number;
+  url: string;
+  title: string;
+}
+
+interface DossierEntry {
+  verdict: string;
+  summary: string;
+  sources: Source[];
+}
+
+interface Claim {
+  claim_id: string; // Changed to string to match backend transform
+  text: string;
+  status: string;
+}
+
+interface Critique {
+  is_revision_needed: boolean;
+  feedback_text: string;
+}
+
+interface CaseFile {
+  claims: Claim[];
+  dossier: { [key: string]: DossierEntry };
+  critique: Critique | Record<string, never>;
+  draft_response: string;
+  final_response: string;
+}
+
+// Analysis progress steps
+interface ProgressStep {
+  id: string;
+  text: string;
+  status: 'pending' | 'in_progress' | 'completed';
+}
+
+const initialProgressSteps: ProgressStep[] = [
+  { id: 'ingest_content', text: 'Ingesting Content...', status: 'pending' },
+  { id: 'identify_claims', text: 'Identifying Verifiable Claims...', status: 'pending' },
+  { id: 'research_claims', text: 'Gathering Evidence...', status: 'pending' },
+  { id: 'generate_response', text: 'Drafting Response...', status: 'pending' },
+  { id: 'critique_response', text: 'Performing Quality Review...', status: 'pending' },
+];
+
+const API_BASE_URL = "http://localhost:8000";
 
 type AppStatus = 'idle' | 'submitting' | 'analyzing' | 'results_displayed' | 'refining' | 'error';
-
-interface Target {
-  type: 'video' | 'comment' | null;
-  content: string;
-}
 
 interface WorkbenchState {
   appStatus: AppStatus;
   videoUrl: string;
-  target: Target;
-  caseFile: typeof mockCaseFileData | null;
+  sessionId: string | null;
+  caseFile: CaseFile | null;
+  progressSteps: ProgressStep[];
   errorMessage: string;
-  showToast: boolean;
-  toastMessage: string;
 }
 
 const WorkbenchPage: React.FC = () => {
   const [state, setState] = useState<WorkbenchState>({
     appStatus: 'idle',
     videoUrl: '',
-    target: { type: null, content: '' },
+    sessionId: null,
     caseFile: null,
-    errorMessage: '',
-    showToast: false,
-    toastMessage: ''
+    progressSteps: initialProgressSteps,
+    errorMessage: ''
   });
 
-  const showToast = (message: string) => {
-    setState(prev => ({ ...prev, showToast: true, toastMessage: message }));
-    setTimeout(() => {
-      setState(prev => ({ ...prev, showToast: false, toastMessage: '' }));
-    }, 3000);
-  };
+  // Effect to manage the EventSource connection for status updates
+  useEffect(() => {
+    if (state.appStatus !== 'analyzing' || !state.sessionId) {
+      return;
+    }
 
-  const handleUrlSubmit = (url: string) => {
-    setState(prev => ({ ...prev, videoUrl: url, appStatus: 'submitting' }));
-    
-    // Simulate URL validation
-    setTimeout(() => {
-      setState(prev => ({ ...prev, appStatus: 'idle' }));
-    }, 1000);
-  };
+    const eventSource = new EventSource(`${API_BASE_URL}/api/status/${state.sessionId}`);
 
-  const handleTargetSelect = (type: 'video' | 'comment', content: string = '') => {
-    setState(prev => ({ 
-      ...prev, 
-      target: { type, content },
-      appStatus: 'analyzing'
-    }));
+    eventSource.onopen = () => {
+      console.log("Connection to event stream opened.");
+    };
 
-    // Simulate analysis completion
-    setTimeout(() => {
-      setState(prev => ({ 
-        ...prev, 
-        appStatus: 'results_displayed',
-        caseFile: mockCaseFileData
-      }));
-    }, 6000);
-  };
+    // Listener for 'update' events
+    eventSource.addEventListener('update', (event) => {
+      const eventData = JSON.parse(event.data);
+      const { step, status } = eventData;
 
-  const handleRefinement = (message: string) => {
-    setState(prev => ({ ...prev, appStatus: 'refining' }));
-
-    // Simulate AI refinement
-    setTimeout(() => {
-      if (state.caseFile) {
-        const updatedCaseFile = {
-          ...state.caseFile,
-          draft_response: state.caseFile.draft_response.replace(
-            'Based on current scientific understanding',
-            'Let me be direct'
+      if (status === 'completed') {
+        setState(prev => ({
+          ...prev,
+          progressSteps: prev.progressSteps.map(p =>
+            p.id === step ? { ...p, status: 'completed' } : p
           )
-        };
-        
-        setState(prev => ({ 
-          ...prev, 
-          appStatus: 'results_displayed',
-          caseFile: updatedCaseFile
         }));
       }
-    }, 2000);
+    });
+
+    // Listener for 'complete' event
+    eventSource.addEventListener('complete', (event) => {
+      const eventData = JSON.parse(event.data);
+      setState(prev => ({
+        ...prev,
+        appStatus: 'results_displayed',
+        caseFile: eventData.caseFile as CaseFile
+      }));
+      eventSource.close();
+    });
+
+    // Listener for 'error' events
+    eventSource.addEventListener('error', (event: Event) => {
+      // The 'error' event for EventSource doesn't typically contain a data payload.
+      // It's usually a sign of a connection failure or the server closing the stream.
+      console.error('An error occurred with the event stream:', event);
+      
+      let message = 'The connection to the server was lost or the analysis failed.';
+      // We only try to parse data if it seems to exist.
+      const eventWithData = event as MessageEvent;
+      if (eventWithData && eventWithData.data) {
+          try {
+              const eventData = JSON.parse(eventWithData.data);
+              if (eventData?.message) {
+                  message = eventData.message;
+              }
+          } catch (e) {
+              console.error("Could not parse error event data:", e);
+          }
+      }
+
+      // Avoid setting an error state if the stream just ended successfully.
+      setState(prev => {
+        if (prev.appStatus === 'results_displayed') {
+          return prev;
+        }
+        return {
+          ...prev,
+          appStatus: 'error',
+          errorMessage: message
+        };
+      });
+
+      eventSource.close();
+    });
+
+    // Cleanup on component unmount or state change
+    return () => {
+      console.log("Closing event stream connection.");
+      eventSource.close();
+    };
+  }, [state.appStatus, state.sessionId]);
+
+
+  const handleUrlSubmit = async (url: string) => {
+    setState(prev => ({ ...prev, videoUrl: url, appStatus: 'submitting' }));
+
+    try {
+      // Since we are ignoring the comment analysis, we immediately start analysis
+      const response = await fetch(`${API_BASE_URL}/api/analyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ video_url: url })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to start analysis.');
+      }
+
+      const data = await response.json();
+      setState(prev => ({
+        ...prev,
+        sessionId: data.session_id,
+        appStatus: 'analyzing',
+        progressSteps: initialProgressSteps.map(p => 
+          p.id === 'ingest_content' ? {...p, status: 'in_progress'} : p
+        )
+      }));
+
+    } catch (error) {
+      console.error(error);
+      setState(prev => ({ 
+        ...prev, 
+        appStatus: 'error', 
+        errorMessage: 'Could not connect to the backend server.' 
+      }));
+    }
+  };
+
+  // This function is no longer needed as we start analysis directly
+  // const handleTargetSelect = (type: 'video' | 'comment', content: string = '') => { ... }
+  
+  // Refinement and clipboard logic remain the same for now
+  const handleRefinement = (message: string) => {
+    // This would be a new API call in a real application
+    console.log("Refinement message:", message);
   };
 
   const handleCopyToClipboard = () => {
     if (state.caseFile?.draft_response) {
       navigator.clipboard.writeText(state.caseFile.draft_response);
-      showToast('Comment copied to clipboard!');
+      // Toast logic can be re-added if needed
+    }
+  };
+
+  const renderContent = () => {
+    switch (state.appStatus) {
+      case 'idle':
+      case 'submitting':
+        return (
+          <URLInputForm 
+            onSubmit={handleUrlSubmit}
+            isSubmitting={state.appStatus === 'submitting'}
+          />
+        );
+      case 'analyzing':
+        return <AnalysisStatus steps={state.progressSteps} />;
+      case 'results_displayed':
+      case 'refining':
+        if (state.caseFile) {
+          return (
+            <CaseFileDashboard 
+              caseFile={state.caseFile}
+              videoUrl={state.videoUrl}
+              isRefining={state.appStatus === 'refining'}
+              onRefinement={handleRefinement}
+              onCopyToClipboard={handleCopyToClipboard}
+            />
+          );
+        }
+        return null; // Or some fallback UI
+      case 'error':
+        return (
+          <div className="text-center text-red-400">
+            <h2 className="text-2xl font-bold">An Error Occurred</h2>
+            <p>{state.errorMessage}</p>
+          </div>
+        );
+      default:
+        return null;
     }
   };
 
@@ -150,67 +258,15 @@ const WorkbenchPage: React.FC = () => {
         </motion.header>
 
         <AnimatePresence mode="wait">
-          {state.appStatus === 'idle' && (
-            <motion.div
-              key="url-input"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
-              transition={{ duration: 0.3 }}
-            >
-              <URLInputForm 
-                onSubmit={handleUrlSubmit}
-                isSubmitting={state.appStatus === 'submitting'}
-              />
-              {state.videoUrl && (
-                <TargetSelector onSelect={handleTargetSelect} />
-              )}
-            </motion.div>
-          )}
-
-          {state.appStatus === 'analyzing' && (
-            <motion.div
-              key="analysis"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
-              transition={{ duration: 0.3 }}
-            >
-              <AnalysisStatus />
-            </motion.div>
-          )}
-
-          {(state.appStatus === 'results_displayed' || state.appStatus === 'refining') && state.caseFile && (
-            <motion.div
-              key="results"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
-              transition={{ duration: 0.3 }}
-            >
-              <CaseFileDashboard 
-                caseFile={state.caseFile}
-                videoUrl={state.videoUrl}
-                isRefining={state.appStatus === 'refining'}
-                onRefinement={handleRefinement}
-                onCopyToClipboard={handleCopyToClipboard}
-              />
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* Toast Notification */}
-        <AnimatePresence>
-          {state.showToast && (
-            <motion.div
-              initial={{ opacity: 0, x: 100 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 100 }}
-              className="fixed bottom-6 right-6 bg-teal-600 text-white px-6 py-3 rounded-lg shadow-lg toast z-50"
-            >
-              {state.toastMessage}
-            </motion.div>
-          )}
+          <motion.div
+            key={state.appStatus}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            transition={{ duration: 0.3 }}
+          >
+            {renderContent()}
+          </motion.div>
         </AnimatePresence>
       </div>
     </div>

@@ -1,30 +1,18 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { motion } from 'framer-motion';
 import { Check, Loader2 } from 'lucide-react';
 
-const analysisSteps = [
-  { id: 1, text: 'Ingesting Content...', duration: 1500 },
-  { id: 2, text: 'Analyzing Transcript & On-Screen Text...', duration: 1500 },
-  { id: 3, text: 'Identifying Verifiable Claims...', duration: 1500 },
-  { id: 4, text: 'Gathering Evidence from Trusted Sources...', duration: 1500 }
-];
+interface ProgressStep {
+  id: string;
+  text: string;
+  status: 'pending' | 'in_progress' | 'completed';
+}
 
-const AnalysisStatus: React.FC = () => {
-  const [completedSteps, setCompletedSteps] = useState<number[]>([]);
-  const [currentStep, setCurrentStep] = useState(0);
+interface AnalysisStatusProps {
+  steps: ProgressStep[];
+}
 
-  useEffect(() => {
-    const processSteps = async () => {
-      for (let i = 0; i < analysisSteps.length; i++) {
-        setCurrentStep(i);
-        await new Promise(resolve => setTimeout(resolve, analysisSteps[i].duration));
-        setCompletedSteps(prev => [...prev, analysisSteps[i].id]);
-      }
-    };
-
-    processSteps();
-  }, []);
-
+const AnalysisStatus: React.FC<AnalysisStatusProps> = ({ steps }) => {
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -41,9 +29,9 @@ const AnalysisStatus: React.FC = () => {
         </div>
 
         <div className="space-y-4">
-          {analysisSteps.map((step, index) => {
-            const isCompleted = completedSteps.includes(step.id);
-            const isCurrent = currentStep === index && !isCompleted;
+          {steps.map((step, index) => {
+            const isCompleted = step.status === 'completed';
+            const isCurrent = step.status === 'in_progress';
 
             return (
               <motion.div
