@@ -349,3 +349,5 @@ __marimo__/
 
 .cursor
 tests/
+
+DEPLOY.md

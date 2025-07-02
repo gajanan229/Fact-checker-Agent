@@ -54,7 +54,7 @@ const initialProgressSteps: ProgressStep[] = [
   { id: 'critique_response', text: 'Performing Quality Review...', status: 'pending' },
 ];
 
-const API_BASE_URL = "http://localhost:8000";
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 type AppStatus = 'idle' | 'submitting' | 'analyzing' | 'results_displayed' | 'refining' | 'error';
 
