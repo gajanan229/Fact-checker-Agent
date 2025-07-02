@@ -1,7 +1,6 @@
-# Core web framework
-fastapi==0.115.14
-uvicorn==0.29.0
-starlette==0.46.2
+# Core web framework (Flask, not FastAPI!)
+Flask==3.0.3
+Flask-Cors==4.0.1
 
 # LangChain ecosystem (essential for the fact-checker)
 langchain==0.3.26
@@ -16,9 +15,13 @@ langsmith>=0.3.45
 google-ai-generativelanguage==0.6.18
 google-api-core==2.25.1
 google-auth==2.40.3
+googleapis-common-protos==1.70.0
 
 # Search and research
 tavily-python==0.3.3
+
+# Apify for TikTok content
+apify-client==1.4.1
 
 # Data processing
 pydantic==2.11.7
