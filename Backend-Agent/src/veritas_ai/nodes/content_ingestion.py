@@ -32,8 +32,13 @@ from ..utils.api_usage import api_usage_manager, APIUsageError
 logger = logging.getLogger(__name__)
 
 
+# Exception Classes
 class ContentIngestionError(Exception):
-    """Custom exception for content ingestion errors"""
+    """Raised when content ingestion fails."""
+    pass
+
+class TranscriptExtractionError(ContentIngestionError):
+    """Raised specifically when transcript extraction fails."""
     pass
 
 
@@ -155,7 +160,7 @@ class ApifyTranscriber:
             
             transcript = dataset_items[0].get("transcript")
             if not transcript:
-                raise ContentIngestionError("Transcript not found in Apify actor result.")
+                raise TranscriptExtractionError("Transcript not found in Apify actor result.")
             
             logger.info(f"Successfully retrieved transcript for {video_url}.")
             return transcript
@@ -163,6 +168,9 @@ class ApifyTranscriber:
         except APIUsageError as e:
             logger.error(f"API limit reached for Apify: {e}")
             raise ContentIngestionError(str(e))
+        except TranscriptExtractionError:
+            # Re-raise transcript-specific errors without wrapping them
+            raise
         except Exception as e:
             logger.error(f"Apify transcription failed for {video_url}: {e}")
             raise ContentIngestionError(f"Failed to get transcript from Apify: {e}")
@@ -286,6 +294,10 @@ async def ingest_content(state: GraphState, config: Optional[RunnableConfig] = N
             'workflow_stage': 'content_extracted'
         }
         
+    except TranscriptExtractionError:
+        # Re-raise transcript extraction errors so they can be handled by the runner
+        # with user-friendly messages
+        raise
     except Exception as e:
         logger.error(f"Content ingestion node failed: {e}", exc_info=True)
         
@@ -316,6 +328,9 @@ def ingest_content_sync(state: GraphState, config: Optional[RunnableConfig] = No
     """
     try:
         return asyncio.run(ingest_content(state, config))
+    except TranscriptExtractionError:
+        # Re-raise transcript extraction errors so they can be handled by the runner
+        raise
     except Exception as e:
         logger.error(f"Sync wrapper for content ingestion failed: {e}")
         processing_status = state.get('processing_status', {}).copy()

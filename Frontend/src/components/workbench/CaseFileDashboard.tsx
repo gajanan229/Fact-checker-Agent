@@ -52,6 +52,7 @@ const CaseFileDashboard: React.FC<CaseFileDashboardProps> = ({
         <div className="lg:col-span-2 space-y-6">
           <DraftResponse 
             response={caseFile.draft_response} 
+            sources={caseFile.response_sources}
             isRefining={isRefining} 
           />
           <CollaborationHub 

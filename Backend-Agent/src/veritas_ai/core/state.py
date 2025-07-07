@@ -51,6 +51,14 @@ class Source(TypedDict):
     relevance_score: NotRequired[float]    # 0.0 to 1.0
 
 
+class NumberedSourceRef(TypedDict):
+    """A numbered source reference for display in the frontend."""
+    number: int
+    domain: str
+    title: NotRequired[str]
+    url: NotRequired[str]
+
+
 class Claim(TypedDict):
     """Individual claim to be fact-checked."""
     id: str
@@ -149,6 +157,7 @@ class GraphState(TypedDict):
     draft_response: NotRequired[str]
     final_response: NotRequired[str]
     response_metadata: NotRequired[Dict[str, Any]]
+    response_sources: NotRequired[List[NumberedSourceRef]]
     
     # Quality control
     critique: NotRequired[Critique]

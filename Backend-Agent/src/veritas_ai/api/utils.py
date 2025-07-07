@@ -49,6 +49,7 @@ def transform_state_for_frontend(graph_state: GraphState) -> Dict[str, Any]:
         "critique": graph_state.get("critique", {}),
         "draft_response": graph_state.get("draft_response", ""),
         "final_response": graph_state.get("final_response", ""),
+        "response_sources": graph_state.get("response_sources", []),
     }
     
     return case_file 

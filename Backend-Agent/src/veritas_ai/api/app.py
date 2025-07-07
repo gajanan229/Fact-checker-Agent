@@ -20,8 +20,13 @@ def create_app():
     """Creates and configures a Flask application."""
     app = Flask(__name__)
     
-    # Configure CORS to allow requests from the frontend development server
-    CORS(app, resources={r"/api/*": {"origins": "*"}}) # Loosened for development
+    # Configure CORS to allow requests from frontend (both dev and production)
+    CORS(app, 
+         resources={r"/api/*": {"origins": "*"}},
+         methods=["GET", "POST", "OPTIONS"],
+         allow_headers=["Content-Type", "Authorization"],
+         supports_credentials=False
+    )
 
     @app.route('/api/health', methods=['GET'])
     def health_check():

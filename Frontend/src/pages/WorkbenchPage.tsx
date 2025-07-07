@@ -13,6 +13,13 @@ interface Source {
   title: string;
 }
 
+interface ResponseSource {
+  number: number;
+  domain: string;
+  title?: string;
+  url?: string;
+}
+
 interface DossierEntry {
   verdict: string;
   summary: string;
@@ -36,6 +43,7 @@ interface CaseFile {
   critique: Critique | Record<string, never>;
   draft_response: string;
   final_response: string;
+  response_sources?: ResponseSource[];
   error_message?: string;
 }
 
@@ -159,25 +167,29 @@ const WorkbenchPage: React.FC = () => {
       eventSource.close();
     });
 
-    // Listener for 'error' events
-    eventSource.addEventListener('error', (event: Event) => {
-      // The 'error' event for EventSource doesn't typically contain a data payload.
-      // It's usually a sign of a connection failure or the server closing the stream.
-      console.error('An error occurred with the event stream:', event);
+    // Listener for custom 'error' events from backend (e.g., transcript extraction failures)
+    eventSource.addEventListener('error', (event: MessageEvent) => {
+      const eventData = JSON.parse(event.data);
+      const errorMessage = eventData.message || 'An error occurred during analysis.';
       
-      let message = 'The connection to the server was lost or the analysis failed.';
-      // We only try to parse data if it seems to exist.
-      const eventWithData = event as MessageEvent;
-      if (eventWithData && eventWithData.data) {
-          try {
-              const eventData = JSON.parse(eventWithData.data);
-              if (eventData?.message) {
-                  message = eventData.message;
-              }
-          } catch (e) {
-              console.error("Could not parse error event data:", e);
-          }
-      }
+      console.error('Backend error event received:', errorMessage);
+      
+      setState(prev => ({
+        ...prev,
+        appStatus: 'error',
+        errorMessage: errorMessage
+      }));
+      
+      eventSource.close();
+    });
+
+    // Listener for native EventSource 'error' events (connection issues)
+    eventSource.onerror = (event: Event) => {
+      // The native 'error' event for EventSource doesn't typically contain a data payload.
+      // It's usually a sign of a connection failure or the server closing the stream.
+      console.error('EventSource connection error:', event);
+      
+      const message = 'The connection to the server was lost or the analysis failed.';
 
       // Avoid setting an error state if the stream just ended successfully.
       setState(prev => {
@@ -192,7 +204,7 @@ const WorkbenchPage: React.FC = () => {
       });
 
       eventSource.close();
-    });
+    };
 
     // Cleanup on component unmount or state change
     return () => {
@@ -290,13 +302,25 @@ const WorkbenchPage: React.FC = () => {
       case 'refining':
         if (state.caseFile) {
           return (
-            <CaseFileDashboard 
-              caseFile={state.caseFile}
-              videoUrl={state.videoUrl}
-              isRefining={state.appStatus === 'refining'}
-              onRefinement={handleRefinement}
-              onCopyToClipboard={handleCopyToClipboard}
-            />
+            <div className="space-y-6">
+              <CaseFileDashboard 
+                caseFile={state.caseFile}
+                videoUrl={state.videoUrl}
+                isRefining={state.appStatus === 'refining'}
+                onRefinement={handleRefinement}
+                onCopyToClipboard={handleCopyToClipboard}
+              />
+              {state.appStatus === 'results_displayed' && (
+                <motion.button
+                  onClick={() => navigate('/')}
+                  className="verifyp-button text-white font-semibold py-3 px-6 rounded-lg w-full"
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                >
+                  Start New Analysis
+                </motion.button>
+              )}
+            </div>
           );
         }
         return null; // Or some fallback UI

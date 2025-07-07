@@ -6,6 +6,7 @@ from queue import Queue
 from .utils import transform_state_for_frontend
 from ..core.autonomous_graph import create_autonomous_graph
 from ..core.validation import create_initial_state
+from ..nodes.content_ingestion import TranscriptExtractionError
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -65,6 +66,15 @@ def run_graph_in_thread(session_id: str, video_url: str, event_queue: Queue):
         frontend_payload = transform_state_for_frontend(final_state)
         event_queue.put({'type': 'complete', 'payload': { "caseFile": frontend_payload }})
 
+    except TranscriptExtractionError as e:
+        logging.error(f"Transcript extraction failed for session {session_id}: {e}", exc_info=True)
+        user_friendly_message = (
+            "Unable to extract transcript from the video. This may occur if the video "
+            "does not contain clear audio or if the content cannot be processed. "
+            "Please try again with a different video that has clear spoken content, "
+            "or ensure the video URL is accessible and contains audio."
+        )
+        event_queue.put({'type': 'error', 'payload': {"message": user_friendly_message}})
     except Exception as e:
         logging.error(f"Error during graph execution for session {session_id}: {e}", exc_info=True)
         error_message = f"An unexpected error occurred: {str(e)}"

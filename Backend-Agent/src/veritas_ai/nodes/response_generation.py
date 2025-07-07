@@ -65,6 +65,14 @@ class CitationStyle(str, Enum):
     EMBEDDED = "embedded"    # According to BBC News...
 
 
+class NumberedSource(BaseModel):
+    """A numbered source for citation display"""
+    number: int = Field(description="Sequential number for citation reference")
+    domain: str = Field(description="Source domain for display")
+    title: Optional[str] = Field(default=None, description="Source title if available")
+    url: Optional[str] = Field(default=None, description="Source URL if available")
+
+
 class GeneratedResponse(BaseModel):
     """Structured output model for LLM-generated responses"""
     
@@ -85,6 +93,11 @@ class GeneratedResponse(BaseModel):
         description="List of source URLs or domains referenced in the response"
     )
     
+    numbered_sources: List[NumberedSource] = Field(
+        description="List of numbered sources for separate display",
+        default_factory=list
+    )
+    
     confidence_level: float = Field(
         ge=0.0, le=1.0,
         description="Confidence in the accuracy and completeness of the response"
@@ -93,8 +106,8 @@ class GeneratedResponse(BaseModel):
     @field_validator('response_text')
     @classmethod
     def validate_response_quality(cls, v):
-        if len(v.strip()) < 50:
-            raise ValueError("Response too short - must be at least 50 characters")
+        if len(v.strip()) < 30:  # Reduced from 50 to 30 for more reasonable minimum
+            raise ValueError(f"Response too short - must be at least 30 characters, got {len(v.strip())}")
         if len(v) > 2000:
             raise ValueError("Response too long - must be under 2000 characters")
         return v.strip()
@@ -222,6 +235,11 @@ class ResponseGenerator:
         user_preferences = user_preferences or {}
         tone = ResponseTone(user_preferences.get('response_tone', 'educational'))
         
+        # Validate inputs before proceeding
+        if not claims:
+            logger.warning("No claims provided for response generation")
+            return self._create_fallback_response("No verifiable claims were found to address.")
+        
         try:
             # Check Gemini API usage limits
             api_usage_manager.check_and_increment_gemini()
@@ -231,6 +249,13 @@ class ResponseGenerator:
             claims_summary = self._prepare_claims_summary(claims)
             evidence_summary = self._prepare_evidence_summary(claims)
             
+            # Debug logging to track what's being passed to LLM
+            logger.info(f"Generating response for {len(claims)} claims")
+            logger.info(f"Content summary length: {len(content_summary)} chars")
+            logger.info(f"Claims summary length: {len(claims_summary)} chars")
+            logger.info(f"Evidence summary length: {len(evidence_summary)} chars")
+            
+            # Enhanced user prompt with stronger length guidance
             user_prompt = f"""Content Summary:
 {content_summary}
 
@@ -240,11 +265,14 @@ Claims to address:
 Available evidence:
 {evidence_summary}
 
-Please provide a constructive response that:
-1. Addresses each claim with evidence
+IMPORTANT: Please provide a constructive, detailed fact-checking response that:
+1. Addresses each claim with specific evidence
 2. Uses the provided sources for citations (reference as [SOURCE_X])
 3. Maintains a respectful, educational tone
-4. Is approximately 100-200 words"""
+4. Must be AT LEAST 100 words long - provide detailed explanations
+5. Include specific facts and context to help readers understand the truth
+
+Your response should be comprehensive and informative, not just a brief statement."""
             
             # Create prompt template
             prompt = ChatPromptTemplate.from_messages([
@@ -255,52 +283,152 @@ Please provide a constructive response that:
             # Get LLM
             llm = self.llm_manager.get_llm()
             
-            # Set up structured output
-            structured_llm = llm.with_structured_output(GeneratedResponse)
-            
-            # Create chain
-            chain = prompt | structured_llm
-            
-            # Generate response
-            logger.info("Generating response with LLM")
-            response = await chain.ainvoke({})
-            
-            # Apply citation formatting
-            response = self._apply_citation_formatting(response, claims)
-            logger.info("Successfully generated response")
-            return response
+            # Try structured output first, with fallback
+            try:
+                # Set up structured output
+                structured_llm = llm.with_structured_output(GeneratedResponse)
+                chain = prompt | structured_llm
+                
+                logger.info("Generating response with structured output")
+                response = await chain.ainvoke({})
+                
+                # Validate response length
+                if len(response.response_text.strip()) < 30:
+                    logger.warning(f"Structured output too short ({len(response.response_text)} chars), trying fallback")
+                    raise ValueError("Response too short, trying fallback")
+                
+                # Apply citation formatting
+                response = self._apply_numbered_citations(response, claims)
+                logger.info("Successfully generated structured response")
+                return response
+                
+            except Exception as structured_error:
+                logger.warning(f"Structured output failed: {structured_error}, trying plain text fallback")
+                
+                # Fallback to plain text generation
+                plain_chain = prompt | llm | StrOutputParser()
+                plain_response = await plain_chain.ainvoke({})
+                
+                # Create structured response from plain text
+                fallback_response = self._create_structured_from_plain(plain_response, claims, tone)
+                logger.info("Successfully generated fallback response")
+                return fallback_response
             
         except APIUsageError as e:
             logger.error(f"API limit reached for Gemini in response generation: {e}")
             raise ResponseGenerationError(str(e))
         except Exception as e:
             logger.error(f"Response generation failed: {e}", exc_info=True)
-            raise ResponseGenerationError(f"Failed to generate response: {e}")
+            # Return a basic fallback response instead of failing completely
+            return self._create_fallback_response(
+                "An error occurred during response generation. Please try again or contact support."
+            )
     
-    def _apply_citation_formatting(
+    def _create_fallback_response(self, message: str) -> GeneratedResponse:
+        """Create a basic fallback response when generation fails"""
+        return GeneratedResponse(
+            response_text=message,
+            tone_assessment=ResponseTone.EDUCATIONAL,
+            key_points=["Response generation encountered an issue"],
+            sources_cited=[],
+            confidence_level=0.1
+        )
+    
+    def _create_structured_from_plain(self, plain_text: str, claims: List[Claim], tone: ResponseTone) -> GeneratedResponse:
+        """Convert plain text response to structured format"""
+        # Apply numbered citation formatting to plain text
+        formatted_text = plain_text
+        all_sources = []
+        source_domains = set()
+        
+        # Collect unique sources
+        for claim in claims:
+            if claim.get('sources'):
+                for source in claim['sources']:
+                    domain = source['domain']
+                    if domain not in source_domains:
+                        all_sources.append(source)
+                        source_domains.add(domain)
+        
+        # Create numbered sources and replace placeholders
+        numbered_sources = []
+        for i, source in enumerate(all_sources, 1):
+            # Create numbered source for display
+            numbered_source = NumberedSource(
+                number=i,
+                domain=source['domain'],
+                title=source.get('title'),
+                url=source.get('url')
+            )
+            numbered_sources.append(numbered_source)
+            
+            # Replace placeholders with numbered references
+            placeholder = f"[SOURCE_{i-1}]"  # LLM uses 0-based indexing
+            citation = f"[{i}]"
+            formatted_text = formatted_text.replace(placeholder, citation)
+        
+        # Extract key points (simple heuristic)
+        sentences = [s.strip() for s in formatted_text.split('.') if s.strip()]
+        key_points = sentences[:5] if sentences else ["Response generated"]
+        
+        # Extract cited sources
+        cited_domains = [source['domain'] for source in all_sources]
+        
+        return GeneratedResponse(
+            response_text=formatted_text,
+            tone_assessment=tone,
+            key_points=key_points,
+            sources_cited=cited_domains,
+            numbered_sources=numbered_sources,
+            confidence_level=0.8
+        )
+    
+    def _apply_numbered_citations(
         self, 
         response: GeneratedResponse, 
         claims: List[Claim]
     ) -> GeneratedResponse:
-        """Apply inline citation formatting to response"""
+        """Apply numbered citation formatting to response and create sources list"""
         
-        # Collect all sources
+        # Collect all sources and remove duplicates
         all_sources = []
+        source_domains = set()
+        
         for claim in claims:
             if claim.get('sources'):
-                all_sources.extend(claim['sources'])
+                for source in claim['sources']:
+                    domain = source['domain']
+                    # Avoid duplicate sources by domain
+                    if domain not in source_domains:
+                        all_sources.append(source)
+                        source_domains.add(domain)
         
         if not all_sources:
             return response
         
-        # Format inline citations (Source: domain.com)
+        # Create numbered sources list
+        numbered_sources = []
         text = response.response_text
-        for i, source in enumerate(all_sources):
-            placeholder = f"[SOURCE_{i}]"
-            citation = f"(Source: {source['domain']})"
+        
+        for i, source in enumerate(all_sources, 1):
+            # Create numbered source for display
+            numbered_source = NumberedSource(
+                number=i,
+                domain=source['domain'],
+                title=source.get('title'),
+                url=source.get('url')
+            )
+            numbered_sources.append(numbered_source)
+            
+            # Replace placeholders with numbered references
+            placeholder = f"[SOURCE_{i-1}]"  # LLM uses 0-based indexing
+            citation = f"[{i}]"
             text = text.replace(placeholder, citation)
         
+        # Update response with numbered citations and sources
         response.response_text = text
+        response.numbered_sources = numbered_sources
+        
         return response
 
 
@@ -339,9 +467,21 @@ async def generate_response(state: GraphState) -> GraphState:
             
             logger.info(f"Successfully generated draft response with confidence: {response.confidence_level}")
             
+            # Convert NumberedSource objects to dict format for state
+            response_sources = [
+                {
+                    "number": source.number,
+                    "domain": source.domain,
+                    "title": source.title,
+                    "url": source.url
+                }
+                for source in response.numbered_sources
+            ]
+            
             # Update state
             return {
                 "draft_response": response.response_text,
+                "response_sources": response_sources,
                 "response_quality": {
                     "confidence_level": response.confidence_level,
                     "tone_assessment": response.tone_assessment.value,

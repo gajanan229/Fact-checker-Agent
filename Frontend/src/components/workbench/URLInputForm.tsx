@@ -30,6 +30,9 @@ const URLInputForm: React.FC<URLInputFormProps> = ({ onSubmit, isSubmitting }) =
           </div>
           <h2 className="text-2xl font-bold text-gray-100 mb-2">Start Your Investigation</h2>
           <p className="text-gray-400">Submit a TikTok link to begin analyzing content or comments</p>
+          <p className="text-sm text-yellow-400 mt-2">
+            ⚠️ Please ensure the TikTok video has clear audio and verifiable claims for accurate analysis.
+          </p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-6">
