@@ -41,12 +41,12 @@ const LandingPage: React.FC = () => {
     {
       icon: <Search className="w-8 h-8" />,
       title: "Deep Analysis",
-      description: "AI-powered investigation of video content and comments with comprehensive fact-checking"
+      description: "AI-powered investigation of video content with comprehensive fact-checking"
     },
     {
       icon: <Target className="w-8 h-8" />,
       title: "Targeted Verification",
-      description: "Choose to analyze video content or specific comments with precision targeting"
+      description: "Choose to analyze video content with precision targeting"
     },
     {
       icon: <Shield className="w-8 h-8" />,
@@ -55,7 +55,7 @@ const LandingPage: React.FC = () => {
     },
     {
       icon: <Users className="w-8 h-8" />,
-      title: "Collaborative Refinement",
+      title: "Collaborative Refinement (Coming Soon)",
       description: "Work with AI to craft the perfect response that's constructive and well-sourced"
     }
   ];

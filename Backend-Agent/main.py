@@ -16,6 +16,7 @@ if __name__ == '__main__':
     port = int(os.environ.get("API_PORT", 8000))
     # Debug mode is off by default and should be explicitly enabled for development.
     debug = os.environ.get("API_DEBUG", "False").lower() == "true"
+    print(debug)
     
     print(f"🚀 Starting Veritas AI Backend Server at http://{host}:{port}")
     print(f"   Debug mode: {'on' if debug else 'off'}")
