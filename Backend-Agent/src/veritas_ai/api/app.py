@@ -1,14 +1,12 @@
 """
 This module contains the Flask application factory and the API route definitions.
 """
+import os
 import sys
 from pathlib import Path
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
-
-# This is a temporary solution to the pathing issue.
-# A better solution would be to structure the project as a proper package.
-sys.path.append(str(Path(__file__).parent.parent.parent))
+import logging
 
 from .manager import AnalysisManager
 from ..utils.api_usage import api_usage_manager
@@ -20,13 +18,51 @@ def create_app():
     """Creates and configures a Flask application."""
     app = Flask(__name__)
     
-    # Configure CORS to allow requests from frontend (both dev and production)
-    CORS(app, 
-         resources={r"/api/*": {"origins": "*"}},
+    # --- Secret Key Configuration ---
+    # Crucial for session security. Must be set in production.
+    app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY')
+    is_debug = app.config.get("DEBUG")
+
+    if not is_debug and not app.config['SECRET_KEY']:
+        raise ValueError("No SECRET_KEY set for production. Please set the SECRET_KEY environment variable.")
+
+    # --- Environment-based CORS Configuration ---
+    # Load allowed origins from environment variable, defaulting to local dev server
+    allowed_origins_str = os.environ.get(
+        "ALLOWED_ORIGINS",
+        "http://localhost:5173"
+    )
+    allowed_origins = [origin.strip() for origin in allowed_origins_str.split(',')]
+
+    CORS(app,
+         resources={r"/api/*": {"origins": allowed_origins}},
          methods=["GET", "POST", "OPTIONS"],
          allow_headers=["Content-Type", "Authorization"],
-         supports_credentials=False
+         supports_credentials=True # Often needed for more complex auth
     )
+
+    # --- Security Headers ---
+    @app.after_request
+    def add_security_headers(response):
+        # Prevent browsers from incorrectly sniffing MIME types
+        response.headers['X-Content-Type-Options'] = 'nosniff'
+        # Prevent clickjacking
+        response.headers['X-Frame-Options'] = 'SAMEORIGIN'
+        # Enforce HTTPS
+        response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+        return response
+
+    # --- Global Error Handler ---
+    @app.errorhandler(Exception)
+    def handle_exception(e):
+        """Log all unhandled exceptions and return a generic error message."""
+        # Log the exception with stack trace
+        logging.error(f"Unhandled exception caught: {e}", exc_info=True)
+        # Return a generic error response to the client
+        response = {
+            "error": "An internal server error occurred. Please try again later."
+        }
+        return jsonify(response), 500
 
     @app.route('/api/health', methods=['GET'])
     def health_check():
@@ -55,8 +91,9 @@ def create_app():
             session_id = manager.start_analysis(video_url)
             return jsonify({"session_id": session_id}), 202 # 202 Accepted
         except Exception as e:
-            # In a real app, you'd want more specific error handling
-            return jsonify({"error": f"Failed to start analysis: {str(e)}"}), 500
+            # This specific exception is now handled by the global handler
+            # We can re-raise it to be caught and logged centrally
+            raise e
 
     @app.route('/api/status/<session_id>', methods=['GET'])
     def stream_status(session_id: str):

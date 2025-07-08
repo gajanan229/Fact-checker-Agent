@@ -1,0 +1,10 @@
+# Test dependencies
+pytest
+pytest-asyncio
+pytest-cov
+coverage
+
+# Formatting and linting
+black
+ruff
+mypy 

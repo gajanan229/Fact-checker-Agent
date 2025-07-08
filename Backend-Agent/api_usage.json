@@ -1,12 +1,12 @@
 {
     "apify": {
-        "count": 32
+        "count": 34
     },
     "tavily": {
-        "count": 49
+        "count": 55
     },
     "gemini": {
-        "count": 8,
+        "count": 16,
         "last_reset": "2025-07-07"
     }
 }
