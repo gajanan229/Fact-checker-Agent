@@ -148,7 +148,7 @@ class ProcessedFeedback(BaseModel):
 class HumanInteractionManager:
     """Core human interaction processing system."""
     
-    def __init__(self, primary_llm: str = "gemini-2.5-flash-lite-preview-06-17", hitl_manager: Optional[HITLManager] = None):
+    def __init__(self, primary_llm: str = "gemini-3.1-flash-lite-preview", hitl_manager: Optional[HITLManager] = None):
         """Initialize the human interaction manager."""
         try:
             # Primary LLM for intent classification and safety assessment

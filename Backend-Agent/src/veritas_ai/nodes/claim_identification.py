@@ -106,7 +106,7 @@ class ClaimExtractionResult(BaseModel):
 class ClaimIdentifier:
     """Core claim identification system using LLM analysis."""
     
-    def __init__(self, model_name: str = "gemini-2.5-flash-lite-preview-06-17"):
+    def __init__(self, model_name: str = "gemini-3.1-flash-lite-preview"):
         """Initialize the claim identifier with LLM."""
         try:
             self.llm = ChatGoogleGenerativeAI(

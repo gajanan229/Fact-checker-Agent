@@ -183,7 +183,7 @@ class TranscriptCleaner:
         """Initialize the cleaner with a Gemini model."""
         try:
             self.llm = ChatGoogleGenerativeAI(
-                model=os.getenv("GEMINI_MODEL", "gemini-1.5-flash-latest"),
+                model=os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite-preview"),
                 temperature=0.0
             )
             self._setup_chain()

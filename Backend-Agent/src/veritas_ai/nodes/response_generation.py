@@ -128,7 +128,7 @@ class LLMManager:
         if os.getenv('GOOGLE_API_KEY'):
             try:
                 self.llm_instances['gemini'] = ChatGoogleGenerativeAI(
-                    model=os.getenv('GEMINI_MODEL', 'gemini-2.5-flash-lite-preview-06-17'),
+                    model=os.getenv('GEMINI_MODEL', 'gemini-3.1-flash-lite-preview'),
                     temperature=float(os.getenv('GEMINI_TEMPERATURE', '0.1')),
                     max_output_tokens=int(os.getenv('GEMINI_MAX_TOKENS', '32048'))
                 )
