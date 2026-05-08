@@ -455,33 +455,3 @@ def identify_claims_sync(state: GraphState) -> GraphState:
         }
 
 
-def create_test_claims(content_text: str, count: int = 3) -> List[Claim]:
-    """
-    Create test claims for development and testing.
-    
-    Args:
-        content_text: Content to create claims from
-        count: Number of test claims to create
-        
-    Returns:
-        List of test claims
-    """
-    test_claims = []
-    current_time = datetime.now(timezone.utc).isoformat()
-    
-    for i in range(min(count, 5)):  # Max 5 test claims
-        claim = Claim(
-            id=str(uuid.uuid4()),
-            text=f"Test claim {i+1} extracted from: {content_text[:50]}...",
-            status=ClaimStatus.PENDING,
-            confidence_score=0.8,
-            verification_summary="",
-            evidence_summary="",
-            sources=[],
-            extracted_from="video",
-            created_at=current_time,
-            last_updated=current_time
-        )
-        test_claims.append(claim)
-    
-    return test_claims 

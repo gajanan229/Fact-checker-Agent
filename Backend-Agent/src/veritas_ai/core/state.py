@@ -1,21 +1,20 @@
 """
 Core state definitions for the Veritas AI fact-checking engine.
 
-This module defines the GraphState and supporting TypedDict classes that represent
-the complete investigation case file as it flows through the LangGraph workflow.
+This module defines :class:`GraphState` and its supporting TypedDicts. The
+state object is the "case file" that flows through the LangGraph workflow,
+carrying everything from the original TikTok URL to the final published
+response.
 """
 
-from typing import Dict, List, Literal, Optional, Union, Any
-from typing_extensions import TypedDict, NotRequired, Annotated
-from datetime import datetime
 from enum import Enum
+from typing import Any, Dict, List, Literal, Optional
 
-from langgraph.graph.message import add_messages
-from langchain_core.messages import BaseMessage
+from typing_extensions import NotRequired, TypedDict
 
 
 class ClaimStatus(str, Enum):
-    """Status of a claim during verification process."""
+    """Lifecycle status of an individual claim."""
     PENDING = "pending"
     RESEARCHING = "researching"
     VERIFIED = "verified"
@@ -26,7 +25,7 @@ class ClaimStatus(str, Enum):
 
 
 class SourceType(str, Enum):
-    """Type of evidence source."""
+    """Classification of an evidence source."""
     NEWS_ARTICLE = "news_article"
     ACADEMIC_PAPER = "academic_paper"
     GOVERNMENT_DOCUMENT = "government_document"
@@ -39,7 +38,7 @@ class SourceType(str, Enum):
 
 
 class Source(TypedDict):
-    """Evidence source information."""
+    """An evidence source attached to a claim."""
     url: str
     title: str
     domain: str
@@ -52,7 +51,7 @@ class Source(TypedDict):
 
 
 class NumberedSourceRef(TypedDict):
-    """A numbered source reference for display in the frontend."""
+    """A numbered source reference rendered in the frontend response."""
     number: int
     domain: str
     title: NotRequired[str]
@@ -60,7 +59,7 @@ class NumberedSourceRef(TypedDict):
 
 
 class Claim(TypedDict):
-    """Individual claim to be fact-checked."""
+    """An individual claim under fact-check."""
     id: str
     text: str
     status: ClaimStatus
@@ -68,21 +67,21 @@ class Claim(TypedDict):
     verification_summary: NotRequired[str]
     evidence_summary: NotRequired[str]
     sources: NotRequired[List[Source]]
-    extracted_from: NotRequired[Literal["video", "comment"]]  # Where claim was found
-    created_at: NotRequired[str]  # ISO timestamp
-    last_updated: NotRequired[str]  # ISO timestamp
+    extracted_from: NotRequired[Literal["video", "comment"]]
+    created_at: NotRequired[str]
+    last_updated: NotRequired[str]
 
 
 class UserInput(TypedDict):
-    """User input and targeting information."""
+    """User input and target selection for an investigation."""
     video_url: str
     target_type: Literal["video", "comment"]
-    target_content: NotRequired[str]  # Username for comment targeting
+    target_content: NotRequired[str]
     user_preferences: NotRequired[Dict[str, Any]]
 
 
 class RawContent(TypedDict):
-    """Raw extracted content from TikTok."""
+    """Raw content extracted from TikTok before claim identification."""
     transcript: NotRequired[str]
     ocr_text: NotRequired[str]
     selected_comment_text: NotRequired[str]
@@ -92,7 +91,7 @@ class RawContent(TypedDict):
 
 
 class ResponseQuality(TypedDict):
-    """Quality metrics for generated responses."""
+    """Quality scores assigned by the critique stage."""
     accuracy_score: NotRequired[float]
     tone_score: NotRequired[float]
     citation_score: NotRequired[float]
@@ -101,7 +100,7 @@ class ResponseQuality(TypedDict):
 
 
 class Critique(TypedDict):
-    """Adversarial review feedback."""
+    """Adversarial review feedback on a draft response."""
     is_revision_needed: bool
     feedback_text: str
     suggested_improvements: NotRequired[List[str]]
@@ -109,104 +108,72 @@ class Critique(TypedDict):
     critique_timestamp: NotRequired[str]
 
 
-class ChatMessage(TypedDict):
-    """Human-AI collaborative chat message."""
-    role: Literal["user", "assistant", "system"]
-    content: str
-    timestamp: str
-    message_type: NotRequired[Literal["feedback", "suggestion", "question", "approval"]]
-    referenced_claim_ids: NotRequired[List[str]]
-
-
 class ProcessingStatus(TypedDict):
-    """Current processing status and progress."""
+    """Snapshot of the current processing step."""
     current_step: Literal[
-        "ingesting", "identifying_claims", "researching", 
-        "generating_response", "reviewing", "awaiting_user"
+        "ingesting", "identifying_claims", "researching",
+        "generating_response", "reviewing", "awaiting_user",
     ]
     step_progress: NotRequired[float]  # 0.0 to 1.0
-    estimated_completion: NotRequired[str]  # ISO timestamp
+    estimated_completion: NotRequired[str]
     error_count: NotRequired[int]
     warnings: NotRequired[List[str]]
 
 
 class GraphState(TypedDict):
     """
-    Complete state of the Veritas AI fact-checking investigation.
-    
-    This represents the "case file" that flows through the LangGraph workflow,
-    containing all information from initial input to final response.
+    Complete state of a Veritas AI fact-checking investigation.
+
+    The same dict instance is mutated as the LangGraph workflow progresses
+    through ingestion -> claim identification -> research -> response
+    drafting -> critique.
     """
-    
+
     # Session and tracking
     session_id: str
     investigation_id: str
-    created_at: str  # ISO timestamp
-    last_updated: str  # ISO timestamp
-    
+    created_at: str
+    last_updated: str
+
     # User input and targeting
     user_input: UserInput
-    
+
     # Raw extracted content
     raw_content: RawContent
-    
+
     # Claims and evidence
     claims: List[Claim]
-    
+
     # Response generation
     draft_response: NotRequired[str]
     final_response: NotRequired[str]
     response_metadata: NotRequired[Dict[str, Any]]
     response_sources: NotRequired[List[NumberedSourceRef]]
-    
+
     # Quality control
     critique: NotRequired[Critique]
     revision_count: int
-    max_revisions: NotRequired[int]  # Default: 3
-    
-    # Human-in-the-loop collaboration
-    chat_history: Annotated[List[BaseMessage], add_messages]
-    user_feedback_pending: NotRequired[bool]
-    collaboration_notes: NotRequired[List[ChatMessage]]
-    
+    max_revisions: NotRequired[int]
+
     # Processing status and control
     status: ProcessingStatus
     workflow_stage: Literal[
-        "initialized", "content_extracted", "claims_identified", 
-        "evidence_gathered", "response_drafted", "response_reviewed", 
-        "user_collaborating", "completed", "failed"
+        "initialized", "content_extracted", "claims_identified",
+        "evidence_gathered", "response_drafted", "response_reviewed",
+        "user_collaborating", "completed", "failed",
     ]
-    
+
     # Error handling and debugging
     error_message: NotRequired[str]
     debug_info: NotRequired[Dict[str, Any]]
     performance_metrics: NotRequired[Dict[str, float]]
-    
+
     # Configuration and preferences
     config: NotRequired[Dict[str, Any]]
     user_preferences: NotRequired[Dict[str, Any]]
 
 
-class MinimalGraphState(TypedDict):
-    """
-    Minimal state for basic operations and testing.
-    
-    This is a simplified version of GraphState for development and testing
-    purposes, containing only the essential fields.
-    """
-    session_id: str
-    user_input: UserInput
-    claims: List[Claim]
-    draft_response: NotRequired[str]
-    revision_count: int
-    workflow_stage: Literal[
-        "initialized", "content_extracted", "claims_identified", 
-        "evidence_gathered", "response_drafted", "response_reviewed", 
-        "completed", "failed"
-    ]
-
-
 # Type aliases for common state operations
 StateUpdate = Dict[str, Any]
 ClaimUpdate = Dict[str, Any]
-SourceUpdate = Dict[str, Any] 
+SourceUpdate = Dict[str, Any]

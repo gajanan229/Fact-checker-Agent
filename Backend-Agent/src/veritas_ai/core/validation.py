@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Union
 from urllib.parse import urlparse
 
 from .state import (
-    GraphState, MinimalGraphState, Claim, Source, UserInput, 
+    GraphState, Claim, Source, UserInput,
     RawContent, ClaimStatus, SourceType, StateUpdate
 )
 
@@ -193,7 +193,7 @@ class StateValidator:
         required_fields = [
             'session_id', 'investigation_id', 'created_at', 'last_updated',
             'user_input', 'raw_content', 'claims', 'revision_count',
-            'chat_history', 'status', 'workflow_stage'
+            'status', 'workflow_stage'
         ]
         
         for field in required_fields:
@@ -336,7 +336,6 @@ def create_initial_state(
         'raw_content': {},
         'claims': [],
         'revision_count': 0,
-        'chat_history': [],
         'status': {
             'current_step': 'ingesting',
             'step_progress': 0.0,
