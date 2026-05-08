@@ -35,7 +35,7 @@ const CaseFileDashboard: React.FC<CaseFileDashboardProps> = ({
       </div>
 
       {/* Target Display */}
-      <TargetDisplay videoUrl={videoUrl} />
+      <TargetDisplay videoUrl={videoUrl} target={caseFile.target} />
 
       {/* Main Content Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

@@ -52,6 +52,33 @@ def _format_sources(sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return formatted
 
 
+def _build_excerpt(text: str, max_chars: int = 240) -> str:
+    """Trim a transcript to a short preview, ending on a word boundary with an ellipsis."""
+    if not text:
+        return ""
+    cleaned = " ".join(text.split())
+    if len(cleaned) <= max_chars:
+        return cleaned
+    truncated = cleaned[:max_chars].rsplit(" ", 1)[0] or cleaned[:max_chars]
+    return f"{truncated}…"
+
+
+def _build_target_metadata(graph_state: GraphState, claims_count: int) -> Dict[str, Any]:
+    """Project ``GraphState`` into the metadata block consumed by ``TargetDisplay``."""
+    raw_content = graph_state.get("raw_content") or {}
+    video_metadata: Dict[str, Any] = raw_content.get("video_metadata") or {}
+    user_input = graph_state.get("user_input") or {}
+
+    return {
+        "url": video_metadata.get("url") or user_input.get("video_url", ""),
+        "domain": video_metadata.get("domain", ""),
+        "video_id": video_metadata.get("video_id", ""),
+        "content_type": video_metadata.get("content_type", "video"),
+        "transcript_excerpt": _build_excerpt(raw_content.get("transcript", "")),
+        "claims_count": claims_count,
+    }
+
+
 def transform_state_for_frontend(graph_state: GraphState) -> Dict[str, Any]:
     """
     Transform the final ``GraphState`` into the ``caseFile`` payload.
@@ -97,4 +124,5 @@ def transform_state_for_frontend(graph_state: GraphState) -> Dict[str, Any]:
         "draft_response": graph_state.get("draft_response", ""),
         "final_response": graph_state.get("final_response", ""),
         "response_sources": graph_state.get("response_sources", []),
+        "target": _build_target_metadata(graph_state, len(frontend_claims)),
     }

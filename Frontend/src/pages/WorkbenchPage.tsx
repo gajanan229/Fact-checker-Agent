@@ -37,6 +37,15 @@ interface Critique {
   feedback_text: string;
 }
 
+interface TargetMetadata {
+  url: string;
+  domain?: string;
+  video_id?: string;
+  content_type?: string;
+  transcript_excerpt?: string;
+  claims_count?: number;
+}
+
 interface CaseFile {
   claims: Claim[];
   dossier: { [key: string]: DossierEntry };
@@ -44,6 +53,7 @@ interface CaseFile {
   draft_response: string;
   final_response: string;
   response_sources?: ResponseSource[];
+  target?: TargetMetadata;
   error_message?: string;
 }
 
