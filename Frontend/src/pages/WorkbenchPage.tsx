@@ -32,9 +32,29 @@ interface Claim {
   status: string;
 }
 
+interface CritiqueDimensionScores {
+  factual_accuracy: number;
+  tone_respectfulness: number;
+  citation_quality: number;
+}
+
+interface ResponseClaimVerification {
+  claim: string;
+  status: string;
+  verification_summary: string;
+}
+
 interface Critique {
   is_revision_needed: boolean;
-  feedback_text: string;
+  overall_quality_score: number | null;
+  quality_scores?: CritiqueDimensionScores | null;
+  strengths: string[];
+  critical_issues: string[];
+  revision_recommendations: string[];
+  response_claim_verifications: ResponseClaimVerification[];
+  revision_count: number;
+  max_revisions: number;
+  ran: boolean;
 }
 
 interface TargetMetadata {
@@ -49,7 +69,7 @@ interface TargetMetadata {
 interface CaseFile {
   claims: Claim[];
   dossier: { [key: string]: DossierEntry };
-  critique: Critique | Record<string, never>;
+  critique: Critique;
   draft_response: string;
   final_response: string;
   response_sources?: ResponseSource[];

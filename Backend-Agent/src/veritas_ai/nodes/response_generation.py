@@ -30,7 +30,7 @@ from langchain_core.output_parsers import StrOutputParser, PydanticOutputParser
 from pydantic import BaseModel, Field, field_validator
 
 # Internal imports
-from ..core.state import GraphState, Claim, Source, ClaimStatus, ResponseQuality
+from ..core.state import GraphState, Claim, Source, ClaimStatus
 from ..utils.api_usage import api_usage_manager, APIUsageError
 
 # Configure logging

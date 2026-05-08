@@ -1,11 +1,15 @@
 """
 Evidence Research Node for Veritas AI.
 
-Each pending claim is handed to a tool-using ReAct agent that may issue
-multiple Tavily searches, optionally extract full pages, and finally
-commits a structured verdict (status + reasoning + supporting sources).
+Each pending claim is run through a deterministic two-call pipeline:
 
-Replaces the previous "one fixed query per claim, never adjudicate" path.
+  1. The LLM proposes one precise web search query (structured output).
+  2. We execute that query against Tavily directly.
+  3. The LLM reads the results and commits a structured verdict.
+
+Single-shot calls only, so we never need to round-trip thought_signatures
+back to Gemini 3.x — sidestepping a known langchain-google-genai limitation
+with multi-turn tool-call loops on thinking models.
 """
 
 from __future__ import annotations
@@ -20,8 +24,7 @@ from urllib.parse import urlparse
 from dotenv import load_dotenv
 from langchain_core.runnables import RunnableConfig
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_tavily import TavilyExtract, TavilySearch
-from langgraph.prebuilt import create_react_agent
+from langchain_tavily import TavilySearch
 from pydantic import BaseModel, Field
 
 from ..core.state import Claim, ClaimStatus, GraphState, Source, SourceType
@@ -78,7 +81,7 @@ class ClaimVerdict(BaseModel):
     )
 
 
-# === Rate-limited Tavily tools ==========================================
+# === Rate-limited Tavily tool ===========================================
 
 class _RateLimitedTavilySearch(TavilySearch):
     """TavilySearch that increments our shared Tavily quota counter per call."""
@@ -92,75 +95,152 @@ class _RateLimitedTavilySearch(TavilySearch):
         return await super()._arun(*args, **kwargs)
 
 
-class _RateLimitedTavilyExtract(TavilyExtract):
-    """TavilyExtract that increments our shared Tavily quota counter per call."""
-
-    def _run(self, *args: Any, **kwargs: Any) -> Any:
-        api_usage_manager.check_and_increment_tavily()
-        return super()._run(*args, **kwargs)
-
-    async def _arun(self, *args: Any, **kwargs: Any) -> Any:
-        api_usage_manager.check_and_increment_tavily()
-        return await super()._arun(*args, **kwargs)
-
-
 # === Agent ==============================================================
 
-_AGENT_SYSTEM_PROMPT = """You are a fact-checking research agent adjudicating ONE claim.
+class _SearchQuery(BaseModel):
+    """A targeted web search query for fact-checking a single claim."""
 
-Tools available to you:
-- tavily_search(query): web search; returns ranked snippets
-- tavily_extract(urls): pull full text from specific URLs when a snippet looks promising
+    query: str = Field(
+        description=(
+            "A precise web search query that would surface authoritative evidence "
+            "for or against the claim. Name specific entities, numbers, or events."
+        )
+    )
 
-Strategy: plan an effective search query, review results, optionally extract the most
-relevant page, optionally do one follow-up search if a key angle is missing, then commit
-a verdict. Stop within 3 searches total.
 
-Prefer reputable sources (major news outlets, government publications, peer-reviewed
-research, established fact-checkers) over blogs and social media. If sources disagree,
-weigh credibility and recency.
+_QUERY_SYSTEM_PROMPT = """You are preparing to fact-check a single claim.
 
-Your final response MUST conform to the ClaimVerdict schema. Choose status:
+Output ONE short, precise web search query that would surface authoritative
+evidence for or against the claim. Prefer queries that name the specific
+entities, numbers, or events involved. Avoid generic queries.
+"""
+
+
+_VERDICT_SYSTEM_PROMPT = """You are a fact-checking research agent adjudicating ONE claim against web search results.
+
+Read the search results carefully and decide a verdict status:
 - verified: well-supported by credible sources
 - debunked: directly contradicted by credible sources
 - misleading: technically accurate but framed deceptively
 - lacks_context: incomplete; missing critical context
 - unverifiable: insufficient credible evidence either way
+
+Prefer reputable sources (major news outlets, government publications, peer-reviewed
+research, established fact-checkers) over blogs and social media. If sources disagree,
+weigh credibility and recency.
+
+Citations must come from the provided search results — pick 1-5 of the most
+directly supportive items. The excerpt for each citation must be a short quote
+drawn from that result's content.
 """
 
 
+def _format_search_results(payload: Any) -> str:
+    """Render a Tavily search payload into a compact prompt-friendly form."""
+    if not isinstance(payload, dict):
+        return str(payload) if payload else "(no results returned)"
+
+    results = payload.get("results") or []
+    if not results:
+        return "(no results returned)"
+
+    lines: List[str] = []
+    answer = (payload.get("answer") or "").strip()
+    if answer:
+        lines.append(f"Tavily summary: {answer}")
+        lines.append("")
+
+    for i, r in enumerate(results, 1):
+        title = (r.get("title") or "").strip() or "(untitled)"
+        url = (r.get("url") or "").strip()
+        content = (r.get("content") or r.get("raw_content") or "").strip()
+        if len(content) > 1500:
+            content = content[:1500] + "..."
+        lines.append(f"[{i}] {title}")
+        lines.append(f"    URL: {url}")
+        lines.append(f"    Excerpt: {content}")
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
+
+
 class _ClaimResearchAgent:
-    """Tool-using ReAct agent that adjudicates a single claim."""
+    """Deterministic two-call research pipeline for a single claim.
+
+    Stage 1: ask the LLM to propose one precise search query.
+    Stage 2: run Tavily search directly.
+    Stage 3: ask the LLM for a verdict given the search results.
+
+    Both LLM calls are single-shot structured outputs, so we never round-trip
+    function-call messages back to the model — this avoids Gemini 3.x's
+    thought_signature requirement, which langchain-google-genai 2.1.6 does
+    not currently preserve across turns.
+    """
 
     def __init__(self, llm: Any, recursion_limit: int = 14):
+        # recursion_limit retained for backwards-compatible call sites; unused
+        # in the deterministic pipeline.
+        del recursion_limit
+        self._llm = llm
         self._search_tool = _RateLimitedTavilySearch(
             max_results=5,
             search_depth="advanced",
             include_raw_content="text",
         )
-        self._extract_tool = _RateLimitedTavilyExtract(extract_depth="basic")
-        self._agent = create_react_agent(
-            model=llm,
-            tools=[self._search_tool, self._extract_tool],
-            prompt=_AGENT_SYSTEM_PROMPT,
-            response_format=ClaimVerdict,
-        )
-        self._recursion_limit = recursion_limit
 
     async def adjudicate(self, claim: Claim) -> ClaimVerdict:
-        """Run the agent on a single claim and return its structured verdict."""
-        user_message = (
-            f"Claim to adjudicate: {claim['text']}\n\n"
-            "Search for evidence, then commit a verdict in the ClaimVerdict format."
-        )
-        result = await self._agent.ainvoke(
-            {"messages": [("user", user_message)]},
-            config={"recursion_limit": self._recursion_limit},
-        )
-        verdict = result.get("structured_response")
+        """Run the pipeline on a single claim and return its structured verdict."""
+        claim_text = claim["text"]
+        claim_id = claim.get("id", "?")
+
+        try:
+            query_model = self._llm.with_structured_output(_SearchQuery)
+            query: _SearchQuery = await query_model.ainvoke([
+                ("system", _QUERY_SYSTEM_PROMPT),
+                ("human", f"Claim to fact-check: {claim_text}"),
+            ])
+        except APIUsageError:
+            raise
+        except Exception as e:
+            raise EvidenceResearchError(
+                f"Failed to generate search query for claim {claim_id}: {e}"
+            ) from e
+
+        try:
+            search_payload = await self._search_tool.ainvoke({"query": query.query})
+        except APIUsageError:
+            raise
+        except Exception as e:
+            raise EvidenceResearchError(
+                f"Tavily search failed for claim {claim_id}: {e}"
+            ) from e
+
+        formatted_results = _format_search_results(search_payload)
+
+        try:
+            api_usage_manager.check_and_increment_gemini()
+            verdict_model = self._llm.with_structured_output(ClaimVerdict)
+            verdict: ClaimVerdict = await verdict_model.ainvoke([
+                ("system", _VERDICT_SYSTEM_PROMPT),
+                (
+                    "human",
+                    (
+                        f"Claim: {claim_text}\n\n"
+                        f"Search query used: {query.query}\n\n"
+                        f"Search results:\n{formatted_results}"
+                    ),
+                ),
+            ])
+        except APIUsageError:
+            raise
+        except Exception as e:
+            raise EvidenceResearchError(
+                f"Failed to produce verdict for claim {claim_id}: {e}"
+            ) from e
+
         if not isinstance(verdict, ClaimVerdict):
             raise EvidenceResearchError(
-                f"Agent did not produce a structured verdict for claim {claim['id']}"
+                f"LLM did not produce a structured verdict for claim {claim_id}"
             )
         return verdict
 

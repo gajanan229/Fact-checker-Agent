@@ -63,6 +63,43 @@ def _build_excerpt(text: str, max_chars: int = 240) -> str:
     return f"{truncated}…"
 
 
+def _build_critique(graph_state: GraphState) -> Dict[str, Any]:
+    """Project the structured critique fields into a stable shape for ``RedTeamLog``.
+
+    Keeps every field optional on the frontend so the UI degrades gracefully if
+    the critique stage was skipped or partially failed. ``revision_count`` /
+    ``max_revisions`` ride along so the status banner can render
+    'passed / revised N times / blocked'.
+    """
+    critique = graph_state.get("critique") or {}
+    if not critique:
+        return {
+            "is_revision_needed": False,
+            "overall_quality_score": None,
+            "quality_scores": None,
+            "strengths": [],
+            "critical_issues": [],
+            "revision_recommendations": [],
+            "response_claim_verifications": [],
+            "revision_count": graph_state.get("revision_count", 0),
+            "max_revisions": graph_state.get("max_revisions", 2),
+            "ran": False,
+        }
+
+    return {
+        "is_revision_needed": bool(critique.get("is_revision_needed", False)),
+        "overall_quality_score": critique.get("overall_quality_score"),
+        "quality_scores": critique.get("quality_scores"),
+        "strengths": list(critique.get("strengths") or []),
+        "critical_issues": list(critique.get("critical_issues") or []),
+        "revision_recommendations": list(critique.get("revision_recommendations") or []),
+        "response_claim_verifications": list(critique.get("response_claim_verifications") or []),
+        "revision_count": graph_state.get("revision_count", 0),
+        "max_revisions": graph_state.get("max_revisions", 2),
+        "ran": True,
+    }
+
+
 def _build_target_metadata(graph_state: GraphState, claims_count: int) -> Dict[str, Any]:
     """Project ``GraphState`` into the metadata block consumed by ``TargetDisplay``."""
     raw_content = graph_state.get("raw_content") or {}
@@ -120,7 +157,7 @@ def transform_state_for_frontend(graph_state: GraphState) -> Dict[str, Any]:
     return {
         "claims": frontend_claims,
         "dossier": dossier,
-        "critique": graph_state.get("critique", {}),
+        "critique": _build_critique(graph_state),
         "draft_response": graph_state.get("draft_response", ""),
         "final_response": graph_state.get("final_response", ""),
         "response_sources": graph_state.get("response_sources", []),

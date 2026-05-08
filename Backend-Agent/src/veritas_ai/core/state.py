@@ -90,21 +90,29 @@ class RawContent(TypedDict):
     extraction_errors: NotRequired[List[str]]
 
 
-class ResponseQuality(TypedDict):
-    """Quality scores assigned by the critique stage."""
-    accuracy_score: NotRequired[float]
-    tone_score: NotRequired[float]
-    citation_score: NotRequired[float]
-    clarity_score: NotRequired[float]
-    overall_score: NotRequired[float]
+class CritiqueDimensionScores(TypedDict):
+    """Dimension scores produced by the critique judge."""
+    factual_accuracy: float       # 0.0 to 1.0
+    tone_respectfulness: float    # 0.0 to 1.0
+    citation_quality: float       # 0.0 to 1.0
+
+
+class ResponseClaimVerification(TypedDict):
+    """Web-verified result for one factual claim extracted from the draft response."""
+    claim: str
+    status: str                   # ClaimStatus value: verified, debunked, etc.
+    verification_summary: str
 
 
 class Critique(TypedDict):
     """Adversarial review feedback on a draft response."""
     is_revision_needed: bool
-    feedback_text: str
-    suggested_improvements: NotRequired[List[str]]
-    quality_assessment: NotRequired[ResponseQuality]
+    overall_quality_score: float                                 # 0.0 to 1.0
+    quality_scores: NotRequired[CritiqueDimensionScores]
+    strengths: NotRequired[List[str]]
+    critical_issues: NotRequired[List[str]]
+    revision_recommendations: NotRequired[List[str]]
+    response_claim_verifications: NotRequired[List[ResponseClaimVerification]]
     critique_timestamp: NotRequired[str]
 
 

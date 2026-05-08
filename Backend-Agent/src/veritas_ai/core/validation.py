@@ -336,6 +336,7 @@ def create_initial_state(
         'raw_content': {},
         'claims': [],
         'revision_count': 0,
+        'max_revisions': 2,
         'status': {
             'current_step': 'ingesting',
             'step_progress': 0.0,
