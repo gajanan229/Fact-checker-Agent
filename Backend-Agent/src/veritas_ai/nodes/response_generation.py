@@ -26,7 +26,6 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
 from pydantic import BaseModel, Field, field_validator
 
 # Internal imports
@@ -119,13 +118,24 @@ class LLMManager:
     
     def __init__(self):
         """Initialize LLM manager with provider configuration"""
-        self.primary_provider = os.getenv('PRIMARY_LLM_PROVIDER', 'gemini')
+        self.primary_provider = os.getenv('PRIMARY_LLM_PROVIDER', 'openai')
         self.llm_instances = {}
         self._initialize_providers()
-    
+
     def _initialize_providers(self):
         """Initialize available LLM providers"""
-        # Google Gemini
+        # OpenAI GPT (primary)
+        if os.getenv('OPENAI_API_KEY'):
+            try:
+                self.llm_instances['openai'] = ChatOpenAI(
+                    model=os.getenv('OPENAI_MODEL', 'gpt-5.4-mini-2026-03-17'),
+                    temperature=float(os.getenv('OPENAI_TEMPERATURE', '0.1')),
+                )
+                logger.info("Initialized OpenAI GPT LLM")
+            except Exception as e:
+                logger.warning(f"Failed to initialize OpenAI: {e}")
+
+        # Google Gemini (fallback only)
         if os.getenv('GOOGLE_API_KEY'):
             try:
                 self.llm_instances['gemini'] = ChatGoogleGenerativeAI(
@@ -136,19 +146,7 @@ class LLMManager:
                 logger.info("Initialized Google Gemini LLM")
             except Exception as e:
                 logger.warning(f"Failed to initialize Gemini: {e}")
-        
-        # OpenAI GPT
-        if os.getenv('OPENAI_API_KEY'):
-            try:
-                self.llm_instances['openai'] = ChatOpenAI(
-                    model=os.getenv('OPENAI_MODEL', 'gpt-4o-mini'),
-                    temperature=float(os.getenv('OPENAI_TEMPERATURE', '0.1')),
-                    max_tokens=int(os.getenv('OPENAI_MAX_TOKENS', '22048'))
-                )
-                logger.info("Initialized OpenAI GPT LLM")
-            except Exception as e:
-                logger.warning(f"Failed to initialize OpenAI: {e}")
-        
+
         if not self.llm_instances:
             raise ResponseGenerationError("No LLM providers successfully initialized")
     
@@ -242,9 +240,9 @@ class ResponseGenerator:
             return self._create_fallback_response("No verifiable claims were found to address.")
         
         try:
-            # Check Gemini API usage limits
-            api_usage_manager.check_and_increment_gemini()
-            
+            # Check OpenAI API usage limits
+            api_usage_manager.check_and_increment_openai()
+
             # Create prompts
             system_prompt = self._create_system_prompt(tone)
             claims_summary = self._prepare_claims_summary(claims)
@@ -278,37 +276,50 @@ Write a single fact-checking response that addresses each claim using the eviden
             
             # Try structured output first, with fallback
             try:
-                # Set up structured output
-                structured_llm = llm.with_structured_output(GeneratedResponse)
+                # Set up structured output (include_raw=True so we can record token usage)
+                structured_llm = llm.with_structured_output(
+                    GeneratedResponse, include_raw=True
+                )
                 chain = prompt | structured_llm
-                
+
                 logger.info("Generating response with structured output")
-                response = await chain.ainvoke({})
-                
+                chain_output = await chain.ainvoke({})
+                raw = chain_output.get("raw") if isinstance(chain_output, dict) else None
+                if raw is not None:
+                    usage = getattr(raw, "usage_metadata", None) or {}
+                    api_usage_manager.record_openai_tokens(usage.get("total_tokens", 0))
+                response = (
+                    chain_output.get("parsed") if isinstance(chain_output, dict) else chain_output
+                )
+                if response is None:
+                    raise ValueError("Structured output produced no parsed response")
+
                 # Validate response length
                 if len(response.response_text.strip()) < 30:
                     logger.warning(f"Structured output too short ({len(response.response_text)} chars), trying fallback")
                     raise ValueError("Response too short, trying fallback")
-                
+
                 # Apply citation formatting
                 response = self._apply_numbered_citations(response, claims)
                 logger.info("Successfully generated structured response")
                 return response
-                
+
             except Exception as structured_error:
                 logger.warning(f"Structured output failed: {structured_error}, trying plain text fallback")
-                
+
                 # Fallback to plain text generation
-                plain_chain = prompt | llm | StrOutputParser()
-                plain_response = await plain_chain.ainvoke({})
-                
+                plain_message = await llm.ainvoke(prompt.invoke({}).to_messages())
+                usage = getattr(plain_message, "usage_metadata", None) or {}
+                api_usage_manager.record_openai_tokens(usage.get("total_tokens", 0))
+                plain_response = plain_message.content or ""
+
                 # Create structured response from plain text
                 fallback_response = self._create_structured_from_plain(plain_response, claims, tone)
                 logger.info("Successfully generated fallback response")
                 return fallback_response
-            
+
         except APIUsageError as e:
-            logger.error(f"API limit reached for Gemini in response generation: {e}")
+            logger.error(f"API limit reached for OpenAI in response generation: {e}")
             raise ResponseGenerationError(str(e))
         except Exception as e:
             logger.error(f"Response generation failed: {e}", exc_info=True)

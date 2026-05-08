@@ -24,10 +24,15 @@ class RateLimiter:
         self.calls.append(time.time())
 
 class APIUsageManager:
+    # OpenAI plan caps
+    OPENAI_RPM = 500
+    OPENAI_DAILY_TOKEN_CAP = 2_500_000
+
     def __init__(self, filepath: str = 'api_usage.json'):
         self.filepath = filepath
         self.usage_data = self._load_usage_data()
         self.gemini_rate_limiter = RateLimiter(max_calls=15, period=60)
+        self.openai_rate_limiter = RateLimiter(max_calls=self.OPENAI_RPM, period=60)
 
     def _load_usage_data(self) -> Dict[str, Any]:
         try:
@@ -37,15 +42,21 @@ class APIUsageManager:
                 data.setdefault('apify', {'count': 0})
                 data.setdefault('tavily', {'count': 0})
                 data.setdefault('gemini', {'count': 0, 'last_reset': str(date.today())})
+                data.setdefault(
+                    'openai',
+                    {'count': 0, 'tokens_today': 0, 'last_reset': str(date.today())},
+                )
                 return data
         except FileNotFoundError:
             return self._default_usage_data()
 
     def _default_usage_data(self) -> Dict[str, Any]:
+        today = str(date.today())
         return {
             'apify': {'count': 0},
             'tavily': {'count': 0},
-            'gemini': {'count': 0, 'last_reset': str(date.today())}
+            'gemini': {'count': 0, 'last_reset': today},
+            'openai': {'count': 0, 'tokens_today': 0, 'last_reset': today},
         }
 
     def _save_usage_data(self):
@@ -57,6 +68,11 @@ class APIUsageManager:
         if self.usage_data['gemini']['last_reset'] != today:
             self.usage_data['gemini']['count'] = 0
             self.usage_data['gemini']['last_reset'] = today
+            self._save_usage_data()
+        if self.usage_data['openai']['last_reset'] != today:
+            self.usage_data['openai']['count'] = 0
+            self.usage_data['openai']['tokens_today'] = 0
+            self.usage_data['openai']['last_reset'] = today
             self._save_usage_data()
 
     def check_and_increment_apify(self):
@@ -73,17 +89,52 @@ class APIUsageManager:
 
     def check_and_increment_gemini(self):
         self._reset_daily_counters_if_needed()
-        
+
         # Check daily limit
         if self.usage_data['gemini']['count'] >= 500:
             raise APIUsageError("Gemini API daily call limit of 500 reached.")
-        
+
         # Check rate limit
         if not self.gemini_rate_limiter.check():
             raise APIUsageError("Gemini API rate limit of 15 calls per minute exceeded.")
-            
+
         self.usage_data['gemini']['count'] += 1
         self.gemini_rate_limiter.add_call()
+        self._save_usage_data()
+
+    def check_and_increment_openai(self):
+        """Pre-flight check for an OpenAI call.
+
+        Daily token budget is enforced by the running tally that
+        ``record_openai_tokens`` keeps; the per-minute rate limit is enforced
+        in-memory because RPM windows shorter than the file write cadence.
+        """
+        self._reset_daily_counters_if_needed()
+
+        if self.usage_data['openai']['tokens_today'] >= self.OPENAI_DAILY_TOKEN_CAP:
+            raise APIUsageError(
+                f"OpenAI daily token limit of {self.OPENAI_DAILY_TOKEN_CAP} reached."
+            )
+
+        if not self.openai_rate_limiter.check():
+            raise APIUsageError(
+                f"OpenAI rate limit of {self.OPENAI_RPM} calls per minute exceeded."
+            )
+
+        self.usage_data['openai']['count'] += 1
+        self.openai_rate_limiter.add_call()
+        self._save_usage_data()
+
+    def record_openai_tokens(self, total_tokens: int):
+        """Record token usage from a completed OpenAI call.
+
+        Called after the response is received so the daily token bucket can
+        block subsequent calls before they start failing with 429.
+        """
+        if not total_tokens or total_tokens <= 0:
+            return
+        self._reset_daily_counters_if_needed()
+        self.usage_data['openai']['tokens_today'] += int(total_tokens)
         self._save_usage_data()
 
     def get_limits_status(self) -> Dict[str, bool]:
@@ -92,7 +143,10 @@ class APIUsageManager:
             "apify_limit_reached": self.usage_data['apify']['count'] >= 800,
             "tavily_limit_reached": self.usage_data['tavily']['count'] >= 1000,
             "gemini_daily_limit_reached": self.usage_data['gemini']['count'] >= 500,
+            "openai_daily_token_limit_reached": (
+                self.usage_data['openai']['tokens_today'] >= self.OPENAI_DAILY_TOKEN_CAP
+            ),
         }
 
 # Singleton instance
-api_usage_manager = APIUsageManager() 
+api_usage_manager = APIUsageManager()

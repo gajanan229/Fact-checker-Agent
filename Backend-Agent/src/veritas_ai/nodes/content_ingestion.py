@@ -3,7 +3,7 @@ Content Ingestion Node for Veritas AI
 
 This module handles the ingestion and processing of TikTok content.
 It uses Apify to extract the audio transcript from a video URL and then
-leverages a Google Gemini model to clean the transcript for downstream processing.
+leverages an OpenAI model to clean the transcript for downstream processing.
 """
 
 import os
@@ -16,9 +16,8 @@ from urllib.parse import urlparse
 
 # Third-party imports
 from apify_client import ApifyClient
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
 
 # LangChain/LangGraph imports
 from langchain_core.runnables import RunnableConfig
@@ -177,61 +176,58 @@ class ApifyTranscriber:
 
 
 class TranscriptCleaner:
-    """Uses Gemini to clean and format the raw transcript."""
+    """Uses OpenAI to clean and format the raw transcript."""
 
     def __init__(self):
-        """Initialize the cleaner with a Gemini model."""
+        """Initialize the cleaner with an OpenAI model."""
         try:
-            self.llm = ChatGoogleGenerativeAI(
-                model=os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite-preview"),
-                temperature=0.0
+            self.llm = ChatOpenAI(
+                model=os.getenv("OPENAI_MODEL", "gpt-5.4-mini-2026-03-17"),
+                temperature=float(os.getenv("OPENAI_TEMPERATURE", "0.1")),
             )
-            self._setup_chain()
-            logger.info("TranscriptCleaner initialized with Gemini model.")
+            self._prompt = ChatPromptTemplate.from_messages([
+                (
+                    "system",
+                    "You are an expert text processing assistant. Your task is to clean a raw video transcript. "
+                    "You must remove all timestamps (e.g., [00:00:00.000 --> 00:00:05.000]), speaker labels, special characters, and extra newline characters. "
+                    "Format the final output as a single, coherent paragraph. Do not add any commentary or explanation."
+                ),
+                (
+                    "human",
+                    "Please clean the following transcript:\n\n---\n\n{raw_transcript}"
+                ),
+            ])
+            logger.info("TranscriptCleaner initialized with OpenAI model.")
         except Exception as e:
             logger.error(f"Failed to initialize TranscriptCleaner: {e}")
             raise ContentIngestionError(f"TranscriptCleaner setup failed: {e}")
 
-    def _setup_chain(self):
-        """Set up the LangChain prompt and chain for cleaning."""
-        prompt = ChatPromptTemplate.from_messages([
-            (
-                "system",
-                "You are an expert text processing assistant. Your task is to clean a raw video transcript. "
-                "You must remove all timestamps (e.g., [00:00:00.000 --> 00:00:05.000]), speaker labels, special characters, and extra newline characters. "
-                "Format the final output as a single, coherent paragraph. Do not add any commentary or explanation."
-            ),
-            (
-                "human",
-                "Please clean the following transcript:\n\n---\n\n{raw_transcript}"
-            )
-        ])
-        
-        self.chain = prompt | self.llm | StrOutputParser()
-
     async def clean_transcript_async(self, raw_transcript: str) -> str:
         """
-        Cleans the raw transcript using the configured Gemini model.
-        
+        Cleans the raw transcript using the configured OpenAI model.
+
         Args:
             raw_transcript: The raw transcript text from Apify.
-            
+
         Returns:
             A single-paragraph, cleaned version of the transcript.
         """
         if not raw_transcript or not raw_transcript.strip():
             logger.warning("Empty raw transcript provided for cleaning.")
             return ""
-        
-        logger.info("Sending raw transcript to Gemini for cleaning.")
+
+        logger.info("Sending raw transcript to OpenAI for cleaning.")
         try:
-            # Check Gemini API usage limits
-            api_usage_manager.check_and_increment_gemini()
-            cleaned_transcript = await self.chain.ainvoke({"raw_transcript": raw_transcript})
+            api_usage_manager.check_and_increment_openai()
+            messages = self._prompt.invoke({"raw_transcript": raw_transcript}).to_messages()
+            ai_message = await self.llm.ainvoke(messages)
+            usage = getattr(ai_message, "usage_metadata", None) or {}
+            api_usage_manager.record_openai_tokens(usage.get("total_tokens", 0))
+            cleaned_transcript = (ai_message.content or "").strip()
             logger.info("Successfully cleaned transcript.")
-            return cleaned_transcript.strip()
+            return cleaned_transcript
         except APIUsageError as e:
-            logger.error(f"API limit reached for Gemini: {e}")
+            logger.error(f"API limit reached for OpenAI: {e}")
             raise ContentIngestionError(str(e))
 
 

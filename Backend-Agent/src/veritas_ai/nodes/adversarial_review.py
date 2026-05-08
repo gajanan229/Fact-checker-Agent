@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 from langchain_core.runnables import RunnableConfig
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
 from ..core.state import (
@@ -140,13 +140,20 @@ Recommendations must name what to change — never write generic advice like
 class CritiquePipeline:
     """Three-stage critique: extract response claims -> web-verify them -> judge."""
 
-    def __init__(self, max_response_claims: int = 3, verification_concurrency: int = 2):
-        self._llm = ChatGoogleGenerativeAI(
-            model=os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite-preview"),
-            temperature=0.1,
-            max_output_tokens=2048,
+    def __init__(
+        self,
+        max_response_claims: int = 3,
+        verification_concurrency: int | None = None,
+    ):
+        self._llm = ChatOpenAI(
+            model=os.getenv("OPENAI_MODEL", "gpt-5.4-mini-2026-03-17"),
+            temperature=float(os.getenv("OPENAI_TEMPERATURE", "0.1")),
         )
         self._verifier = _ClaimResearchAgent(self._llm, recursion_limit=10)
+        if verification_concurrency is None:
+            verification_concurrency = int(
+                os.getenv("CRITIQUE_VERIFICATION_CONCURRENCY", "5")
+            )
         self._verification_semaphore = asyncio.Semaphore(verification_concurrency)
         self._max_response_claims = max_response_claims
 
@@ -172,12 +179,23 @@ class CritiquePipeline:
 
     async def _extract_response_claims(self, draft_response: str) -> List[str]:
         try:
-            api_usage_manager.check_and_increment_gemini()
-            structured = self._llm.with_structured_output(ExtractedResponseClaims)
-            result = await structured.ainvoke([
+            api_usage_manager.check_and_increment_openai()
+            structured = self._llm.with_structured_output(
+                ExtractedResponseClaims, include_raw=True
+            )
+            chain_output = await structured.ainvoke([
                 ("system", _EXTRACT_CLAIMS_PROMPT),
                 ("human", f"Response to analyze:\n\n{draft_response}"),
             ])
+            raw = chain_output.get("raw") if isinstance(chain_output, dict) else None
+            if raw is not None:
+                usage = getattr(raw, "usage_metadata", None) or {}
+                api_usage_manager.record_openai_tokens(usage.get("total_tokens", 0))
+            result = (
+                chain_output.get("parsed") if isinstance(chain_output, dict) else chain_output
+            )
+            if result is None:
+                return []
             claims = [c.text.strip() for c in result.claims if c.text.strip()]
             return claims[: self._max_response_claims]
         except APIUsageError:
@@ -199,7 +217,6 @@ class CritiquePipeline:
                     "text": text,
                 }
                 try:
-                    api_usage_manager.check_and_increment_gemini()
                     verdict = await self._verifier.adjudicate(synthetic_claim)
                     return ResponseClaimVerification(
                         claim=text,
@@ -232,18 +249,32 @@ class CritiquePipeline:
         verifications: List[ResponseClaimVerification],
     ) -> CritiqueJudgement:
         try:
-            api_usage_manager.check_and_increment_gemini()
-            structured = self._llm.with_structured_output(CritiqueJudgement)
+            api_usage_manager.check_and_increment_openai()
+            structured = self._llm.with_structured_output(
+                CritiqueJudgement, include_raw=True
+            )
             user_prompt = (
                 f"DRAFT RESPONSE:\n{draft_response}\n\n"
                 f"{_format_original_claims(original_claims)}\n\n"
                 f"{_format_response_verifications(verifications)}"
             )
-            return await structured.ainvoke([
+            chain_output = await structured.ainvoke([
                 ("system", _JUDGE_PROMPT),
                 ("human", user_prompt),
             ])
+            raw = chain_output.get("raw") if isinstance(chain_output, dict) else None
+            if raw is not None:
+                usage = getattr(raw, "usage_metadata", None) or {}
+                api_usage_manager.record_openai_tokens(usage.get("total_tokens", 0))
+            judgement = (
+                chain_output.get("parsed") if isinstance(chain_output, dict) else chain_output
+            )
+            if judgement is None:
+                raise AdversarialReviewError("LLM produced no structured critique judgement")
+            return judgement
         except APIUsageError:
+            raise
+        except AdversarialReviewError:
             raise
         except Exception as e:
             logger.error(f"Critique judgement failed: {e}", exc_info=True)

@@ -1,12 +1,17 @@
 {
     "apify": {
-        "count": 43
+        "count": 46
     },
     "tavily": {
-        "count": 99
+        "count": 153
     },
     "gemini": {
         "count": 112,
+        "last_reset": "2026-05-08"
+    },
+    "openai": {
+        "count": 135,
+        "tokens_today": 216597,
         "last_reset": "2026-05-08"
     }
 }
