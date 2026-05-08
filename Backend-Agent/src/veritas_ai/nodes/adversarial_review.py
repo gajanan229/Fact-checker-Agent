@@ -1,619 +1,405 @@
 """
-Adversarial Review Node for Veritas AI
+Adversarial Review Node for Veritas AI.
 
-This module handles the internal quality assurance and critique of generated responses including:
-- LLM-powered response critique and quality assessment
-- Bias detection and fairness evaluation
-- Revision recommendation engine with specific improvement suggestions
-- Quality scoring across multiple dimensions
-- Self-correction loops and iterative improvement
-- Safety guardrails against misinformation injection
+Three-stage critique pipeline that genuinely red-teams the draft response:
+
+  1. extract_response_claims  - LLM pulls verifiable factual assertions out of
+                                the draft text itself
+  2. verify_response_claims   - tool-using agent web-searches each one and
+                                returns a verdict (reuses the evidence research
+                                agent from evidence_research.py)
+  3. judge                    - LLM scores the response on factual accuracy,
+                                tone/respectfulness, and citation quality, and
+                                produces a structured Critique
+
+Replaces the previous "two LLM self-grades against the response's own claims"
+implementation, which had no way to catch hallucinations introduced by the
+response generator.
 """
 
-import os
-import logging
+from __future__ import annotations
+
 import asyncio
-from typing import Dict, List, Optional, Literal, Tuple, Any
+import logging
+import os
 from datetime import datetime, timezone
-from enum import Enum
+from typing import Any, Dict, List, Optional
 
-# Third-party imports
+from dotenv import load_dotenv
+from langchain_core.runnables import RunnableConfig
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import PydanticOutputParser
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
-# Internal imports
-from ..core.state import GraphState, Claim, Source, ClaimStatus, ResponseQuality, Critique
-from ..nodes.response_generation import LLMManager, ResponseGenerationError
-from ..utils.api_usage import api_usage_manager, APIUsageError
+from ..core.state import (
+    Claim,
+    Critique,
+    CritiqueDimensionScores,
+    GraphState,
+    ResponseClaimVerification,
+)
+from ..utils.api_usage import APIUsageError, api_usage_manager
+from .evidence_research import EvidenceResearchError, _ClaimResearchAgent
 
-# Configure logging
+load_dotenv()
 logger = logging.getLogger(__name__)
 
 
 class AdversarialReviewError(Exception):
-    """Base exception for adversarial review errors"""
-    pass
+    """Raised for unrecoverable adversarial review failures."""
 
 
-class BiasDetectionError(AdversarialReviewError):
-    """Exception for bias detection failures"""
-    pass
+# === Structured outputs =================================================
+
+class ExtractedResponseClaim(BaseModel):
+    """A factual assertion lifted from the draft response."""
+    text: str = Field(
+        description="The exact factual assertion as it appears in the response."
+    )
 
 
-class QualityDimension(str, Enum):
-    """Dimensions for quality assessment"""
-    ACCURACY = "accuracy"
-    OBJECTIVITY = "objectivity"
-    CLARITY = "clarity"
-    COMPLETENESS = "completeness"
-    TONE_APPROPRIATENESS = "tone_appropriateness"
-    CITATION_QUALITY = "citation_quality"
-    SAFETY = "safety"
-    BIAS_ABSENCE = "bias_absence"
+class ExtractedResponseClaims(BaseModel):
+    """Set of factual assertions extracted from the draft response."""
+    claims: List[ExtractedResponseClaim] = Field(
+        default_factory=list,
+        description="Up to 4 most load-bearing factual assertions in the response.",
+    )
 
 
-class RevisionPriority(str, Enum):
-    """Priority levels for revision recommendations"""
-    CRITICAL = "critical"      # Must fix before proceeding
-    HIGH = "high"             # Should fix, major impact
-    MEDIUM = "medium"         # Good to fix, moderate impact  
-    LOW = "low"               # Minor improvement opportunity
-    OPTIONAL = "optional"     # Style/preference only
-
-
-class BiasType(str, Enum):
-    """Types of bias that can be detected"""
-    POLITICAL = "political"
-    CULTURAL = "cultural"
-    GENDER = "gender"
-    RACIAL = "racial"
-    RELIGIOUS = "religious"
-    SOCIOECONOMIC = "socioeconomic"
-    CONFIRMATION = "confirmation"
-    SELECTION = "selection"
-    ANCHORING = "anchoring"
-
-
-class QualityScore(BaseModel):
-    """Individual quality score for a specific dimension"""
-    dimension: QualityDimension
-    score: float = Field(ge=0.0, le=1.0, description="Quality score from 0.0 to 1.0")
-    justification: str = Field(description="Explanation for the score")
-    improvement_suggestions: List[str] = Field(default_factory=list, max_length=5)
-
-
-class BiasDetection(BaseModel):
-    """Bias detection result"""
-    bias_type: BiasType
-    severity: float = Field(ge=0.0, le=1.0, description="Bias severity from 0.0 to 1.0")
-    evidence: str = Field(description="Specific evidence of bias in the text")
-    mitigation_strategy: str = Field(description="How to address this bias")
-
-
-class RevisionRecommendation(BaseModel):
-    """Specific revision recommendation"""
-    priority: RevisionPriority
-    category: QualityDimension
-    description: str = Field(description="What needs to be changed")
-    specific_suggestion: str = Field(description="Concrete suggestion for improvement")
-    rationale: str = Field(description="Why this change is needed")
-
-
-class CritiqueAssessment(BaseModel):
-    """Comprehensive critique assessment of a response"""
-    
-    overall_quality_score: float = Field(
+class CritiqueScores(BaseModel):
+    """Dimension scores assigned by the judge."""
+    factual_accuracy: float = Field(
         ge=0.0, le=1.0,
-        description="Overall response quality score"
+        description="How well the response's factual claims hold up to verification.",
     )
-    
-    quality_scores: List[QualityScore] = Field(
-        description="Detailed scores for each quality dimension"
+    tone_respectfulness: float = Field(
+        ge=0.0, le=1.0,
+        description="How constructive, neutral, and educational the tone is.",
     )
-    
-    detected_biases: List[BiasDetection] = Field(
-        default_factory=list,
-        description="Any biases detected in the response"
+    citation_quality: float = Field(
+        ge=0.0, le=1.0,
+        description="How well the response cites credible sources for its claims.",
     )
-    
-    revision_recommendations: List[RevisionRecommendation] = Field(
-        description="Specific recommendations for improvement"
-    )
-    
+
+
+class CritiqueJudgement(BaseModel):
+    """Final judgement produced by the critique judge."""
+    scores: CritiqueScores
     is_revision_needed: bool = Field(
-        description="Whether response needs revision before proceeding"
+        description="True only if at least one dimension is < 0.6 OR a verification flagged a debunked claim."
     )
-    
-    critical_issues: List[str] = Field(
-        default_factory=list,
-        description="Any critical issues that must be addressed"
-    )
-    
     strengths: List[str] = Field(
         default_factory=list,
-        description="Positive aspects of the response"
+        description="Concrete strengths of the response (max 4 items, one short sentence each).",
+        max_length=4,
     )
-    
-    confidence_in_assessment: float = Field(
-        ge=0.0, le=1.0,
-        description="Confidence in this critique assessment"
+    critical_issues: List[str] = Field(
+        default_factory=list,
+        description="Concrete issues that warrant a revision (max 4 items).",
+        max_length=4,
+    )
+    revision_recommendations: List[str] = Field(
+        default_factory=list,
+        description="Actionable suggestions for the next draft (max 5 items, name what to change).",
+        max_length=5,
     )
 
-    @field_validator('overall_quality_score')
-    @classmethod
-    def validate_overall_score(cls, v, info):
-        """Validate that overall score aligns with individual scores"""
-        if hasattr(info, 'data') and 'quality_scores' in info.data:
-            individual_scores = [qs.score for qs in info.data['quality_scores']]
-            if individual_scores:
-                avg_score = sum(individual_scores) / len(individual_scores)
-                if abs(v - avg_score) > 0.3:  # Allow some variance but not too much
-                    logger.warning(f"Overall score {v} differs significantly from average {avg_score}")
-        return v
+
+# === Pipeline ===========================================================
+
+_EXTRACT_CLAIMS_PROMPT = """Extract every distinct, externally verifiable factual claim from a fact-checking response.
+
+Include:
+- Statistics, numbers, percentages, dates
+- Specific historical, scientific, or biographical facts
+- Definite assertions that could be confirmed against external sources
+
+Skip:
+- Opinions, hedged language ("may", "might", "some say"), calls to action
+- General context that doesn't make a verifiable claim
+- Citation tokens like [1], [2]
+
+Return at most 4 claims. Prioritize the most load-bearing assertions. Keep each
+claim's text faithful to how the response stated it."""
 
 
-class AdversarialReviewer:
-    """Main class for adversarial review and critique of responses"""
-    
-    def __init__(self):
-        """Initialize the adversarial reviewer"""
-        self.llm_manager = LLMManager()
-        
-        # Quality thresholds
-        self.min_quality_threshold = float(os.getenv('MIN_QUALITY_THRESHOLD', '0.7'))
-        self.bias_severity_threshold = float(os.getenv('BIAS_SEVERITY_THRESHOLD', '0.3'))
-        self.max_revisions = int(os.getenv('MAX_REVISIONS', '3'))
-        
-    def _create_critique_system_prompt(self) -> str:
-        """Create comprehensive system prompt for response critique"""
-        return """You are an expert fact-checking quality assurance reviewer. Your role is to rigorously evaluate fact-checking responses for accuracy, objectivity, clarity, and potential biases.
+_JUDGE_PROMPT = """You are the final judge for a fact-checking response.
 
-You must assess responses across these dimensions:
-1. ACCURACY: Are the facts correct and properly sourced?
-2. OBJECTIVITY: Is the tone neutral and evidence-based?
-3. CLARITY: Is the response clear and well-structured?
-4. COMPLETENESS: Does it address all key claims adequately?
-5. TONE_APPROPRIATENESS: Is the tone constructive and educational?
-6. CITATION_QUALITY: Are sources properly cited and credible?
-7. SAFETY: Does it avoid harmful misinformation?
-8. BIAS_ABSENCE: Is it free from political, cultural, or other biases?
+Score the response on three dimensions, each 0.0 to 1.0:
+- factual_accuracy: do the response's factual assertions match the verification results below? Penalize debunked or misleading verifications heavily.
+- tone_respectfulness: is the tone constructive and educational, free of partisanship, condescension, or inflammatory language?
+- citation_quality: does the response cite credible sources for non-trivial claims, and are citations placed where they belong?
 
-Be especially vigilant for:
-- Subtle confirmation bias or leading language
-- Political partisanship or cultural insensitivity  
-- Incomplete or misleading citations
-- Overly aggressive or dismissive tone
-- Missing context or nuance
-- Technical inaccuracies or oversimplifications
+Set is_revision_needed = true only if at least one dimension is below 0.6 OR a
+verification status is "debunked".
 
-Provide specific, actionable feedback with concrete suggestions for improvement. Your goal is to ensure the highest quality fact-checking responses that build trust and understanding."""
-
-    def _create_bias_detection_prompt(self) -> str:
-        """Create specialized prompt for bias detection"""
-        return """You are a bias detection specialist. Analyze the given text for various types of bias including:
-
-POLITICAL BIAS: Favoring one political viewpoint, party language, partisan framing
-CULTURAL BIAS: Assumptions about cultural norms, stereotypes, ethnocentrism
-GENDER BIAS: Gendered language, assumptions, stereotypes
-RACIAL/ETHNIC BIAS: Racial stereotypes, assumptions, insensitive language
-RELIGIOUS BIAS: Favoritism toward/against religious views, assumptions
-SOCIOECONOMIC BIAS: Class assumptions, privilege assumptions
-CONFIRMATION BIAS: Cherry-picking evidence, ignoring contradictory information
-SELECTION BIAS: Unrepresentative examples, biased source selection
-ANCHORING BIAS: Over-reliance on first information, insufficient adjustment
-
-For each bias detected, provide:
-1. The specific type of bias
-2. Severity level (0.0 to 1.0)
-3. Concrete evidence from the text
-4. Specific mitigation strategy
-
-Be thorough but fair - not every difference in perspective constitutes harmful bias."""
-
-    def _prepare_response_context(self, draft_response: str, claims: List[Claim], sources: List[Source]) -> str:
-        """Prepare context for response evaluation"""
-        context_parts = [
-            f"RESPONSE TO EVALUATE:\n{draft_response}\n",
-            
-            f"ORIGINAL CLAIMS BEING ADDRESSED:\n"
-        ]
-        
-        for i, claim in enumerate(claims, 1):
-            context_parts.append(f"{i}. {claim['text']} (Status: {claim['status'].value})")
-        
-        context_parts.append(f"\nAVAILABLE EVIDENCE SOURCES:\n")
-        
-        all_sources = []
-        for claim in claims:
-            if claim.get('sources'):
-                all_sources.extend(claim['sources'])
-        
-        for i, source in enumerate(all_sources[:10], 1):  # Limit to first 10 sources
-            context_parts.append(f"{i}. {source['title']} ({source['domain']})")
-        
-        return "\n".join(context_parts)
-
-    async def conduct_quality_assessment(
-        self, 
-        draft_response: str, 
-        claims: List[Claim],
-        sources: List[Source] = None
-    ) -> CritiqueAssessment:
-        """
-        Conduct comprehensive quality assessment of a draft response
-        
-        Args:
-            draft_response: The response text to evaluate
-            claims: Original claims being addressed
-            sources: Available evidence sources
-            
-        Returns:
-            CritiqueAssessment: Comprehensive evaluation results
-        """
-        try:
-            # Check Gemini API usage limits
-            api_usage_manager.check_and_increment_gemini()
-            
-            system_prompt = self._create_critique_system_prompt()
-            response_context = self._prepare_response_context(draft_response, claims, sources)
-            
-            user_prompt = f"""Please provide a comprehensive critique of the response based on the provided claims and evidence.
-
-{response_context}
-"""
-            
-            prompt = ChatPromptTemplate.from_messages([
-                ("system", system_prompt),
-                ("human", user_prompt)
-            ])
-            
-            parser = PydanticOutputParser(pydantic_object=CritiqueAssessment)
-            prompt = prompt.partial(format_instructions=parser.get_format_instructions())
-            
-            llm = self.llm_manager.get_llm()
-            chain = prompt | llm | parser
-            
-            assessment = await chain.ainvoke({})
-            return assessment
-            
-        except APIUsageError as e:
-            logger.error(f"API limit reached for Gemini in quality assessment: {e}")
-            raise AdversarialReviewError(str(e))
-        except Exception as e:
-            logger.error(f"Quality assessment failed: {e}", exc_info=True)
-            raise AdversarialReviewError(f"Failed to conduct quality assessment: {e}")
-
-    async def detect_biases(self, draft_response: str) -> List[BiasDetection]:
-        """
-        Detect potential biases in the response
-        
-        Args:
-            draft_response: Response text to analyze for bias
-            
-        Returns:
-            List[BiasDetection]: Detected biases and mitigation strategies
-        """
-        try:
-            # Check Gemini API usage limits
-            api_usage_manager.check_and_increment_gemini()
-            
-            system_prompt = self._create_bias_detection_prompt()
-            
-            class BiasDetectionResults(BaseModel):
-                detected_biases: List[BiasDetection] = Field(default_factory=list)
-            
-            parser = PydanticOutputParser(pydantic_object=BiasDetectionResults)
-            
-            prompt = ChatPromptTemplate.from_messages([
-                ("system", system_prompt),
-                ("human", "Analyze this text: {draft_response}")
-            ]).partial(format_instructions=parser.get_format_instructions())
-            
-            llm = self.llm_manager.get_llm()
-            chain = prompt | llm | parser
-            
-            results = await chain.ainvoke({"draft_response": draft_response})
-            return results.detected_biases
-            
-        except APIUsageError as e:
-            logger.error(f"API limit reached for Gemini in bias detection: {e}")
-            raise BiasDetectionError(str(e))
-        except Exception as e:
-            logger.error(f"Bias detection failed: {e}", exc_info=True)
-            raise BiasDetectionError(f"Failed to detect biases: {e}")
-
-    def generate_revision_recommendations(self, assessment: CritiqueAssessment) -> List[RevisionRecommendation]:
-        """
-        Generate prioritized revision recommendations based on assessment
-        
-        Args:
-            assessment: The critique assessment results
-            
-        Returns:
-            List[RevisionRecommendation]: Prioritized recommendations
-        """
-        recommendations = list(assessment.revision_recommendations)
-        
-        # Add recommendations based on quality scores
-        for quality_score in assessment.quality_scores:
-            if quality_score.score < 0.6:  # Below acceptable threshold
-                for suggestion in quality_score.improvement_suggestions:
-                    recommendation = RevisionRecommendation(
-                        priority=RevisionPriority.HIGH if quality_score.score < 0.4 else RevisionPriority.MEDIUM,
-                        category=quality_score.dimension,
-                        description=f"Improve {quality_score.dimension.value}",
-                        specific_suggestion=suggestion,
-                        rationale=quality_score.justification
-                    )
-                    recommendations.append(recommendation)
-        
-        # Add recommendations for detected biases
-        for bias in assessment.detected_biases:
-            if bias.severity >= self.bias_severity_threshold:
-                recommendation = RevisionRecommendation(
-                    priority=RevisionPriority.CRITICAL if bias.severity > 0.7 else RevisionPriority.HIGH,
-                    category=QualityDimension.BIAS_ABSENCE,
-                    description=f"Address {bias.bias_type.value} bias",
-                    specific_suggestion=bias.mitigation_strategy,
-                    rationale=f"Detected {bias.bias_type.value} bias: {bias.evidence}"
-                )
-                recommendations.append(recommendation)
-        
-        # Sort by priority
-        priority_order = {
-            RevisionPriority.CRITICAL: 0,
-            RevisionPriority.HIGH: 1,
-            RevisionPriority.MEDIUM: 2,
-            RevisionPriority.LOW: 3,
-            RevisionPriority.OPTIONAL: 4
-        }
-        
-        recommendations.sort(key=lambda r: priority_order[r.priority])
-        
-        return recommendations
-
-    def should_require_revision(self, assessment: CritiqueAssessment) -> bool:
-        """
-        Determine if response requires revision based on assessment
-        
-        Args:
-            assessment: The critique assessment
-            
-        Returns:
-            bool: Whether revision is required
-        """
-        # Critical issues always require revision
-        if assessment.critical_issues:
-            return True
-        
-        # Overall quality below threshold requires revision
-        if assessment.overall_quality_score < self.min_quality_threshold:
-            return True
-        
-        # High-severity biases require revision
-        high_severity_biases = [
-            bias for bias in assessment.detected_biases
-            if bias.severity >= self.bias_severity_threshold
-        ]
-        if high_severity_biases:
-            return True
-        
-        # Critical or high priority recommendations require revision
-        critical_recommendations = [
-            rec for rec in assessment.revision_recommendations
-            if rec.priority in [RevisionPriority.CRITICAL, RevisionPriority.HIGH]
-        ]
-        if critical_recommendations:
-            return True
-        
-        return False
-
-    async def critique_response(
-        self, 
-        draft_response: str, 
-        claims: List[Claim],
-        revision_count: int = 0
-    ) -> Critique:
-        """
-        Perform comprehensive critique of a draft response
-        
-        Args:
-            draft_response: The response to critique
-            claims: Original claims being addressed
-            revision_count: Current revision iteration count
-            
-        Returns:
-            Critique: Complete critique with recommendations
-        """
-        try:
-            logger.info(f"Starting comprehensive critique (revision #{revision_count})")
-            
-            # Gather all sources from claims
-            all_sources = []
-            for claim in claims:
-                if claim.get('sources'):
-                    all_sources.extend(claim['sources'])
-            
-            # Conduct quality assessment
-            assessment = await self.conduct_quality_assessment(draft_response, claims, all_sources)
-            
-            # Detect additional biases
-            detected_biases = await self.detect_biases(draft_response)
-            assessment.detected_biases.extend(detected_biases)
-            
-            # Generate comprehensive revision recommendations
-            all_recommendations = self.generate_revision_recommendations(assessment)
-            
-            # Determine if revision is needed
-            needs_revision = self.should_require_revision(assessment)
-            
-            # Create comprehensive feedback text
-            feedback_parts = []
-            
-            if assessment.strengths:
-                feedback_parts.append("STRENGTHS:")
-                for strength in assessment.strengths:
-                    feedback_parts.append(f"• {strength}")
-                feedback_parts.append("")
-            
-            if assessment.critical_issues:
-                feedback_parts.append("CRITICAL ISSUES:")
-                for issue in assessment.critical_issues:
-                    feedback_parts.append(f"• {issue}")
-                feedback_parts.append("")
-            
-            feedback_parts.append(f"OVERALL QUALITY SCORE: {assessment.overall_quality_score:.2f}")
-            feedback_parts.append("")
-            
-            if all_recommendations:
-                feedback_parts.append("REVISION RECOMMENDATIONS:")
-                for rec in all_recommendations[:5]:  # Top 5 recommendations
-                    feedback_parts.append(f"• [{rec.priority.value.upper()}] {rec.description}: {rec.specific_suggestion}")
-            
-            feedback_text = "\n".join(feedback_parts)
-            
-            # Convert quality scores to ResponseQuality format
-            quality_metrics = ResponseQuality()
-            for qs in assessment.quality_scores:
-                if qs.dimension == QualityDimension.ACCURACY:
-                    quality_metrics['accuracy_score'] = qs.score
-                elif qs.dimension == QualityDimension.TONE_APPROPRIATENESS:
-                    quality_metrics['tone_score'] = qs.score
-                elif qs.dimension == QualityDimension.CITATION_QUALITY:
-                    quality_metrics['citation_score'] = qs.score
-                elif qs.dimension == QualityDimension.CLARITY:
-                    quality_metrics['clarity_score'] = qs.score
-            
-            quality_metrics['overall_score'] = assessment.overall_quality_score
-            
-            # Create final critique
-            critique = Critique(
-                is_revision_needed=needs_revision,
-                feedback_text=feedback_text,
-                suggested_improvements=[rec.specific_suggestion for rec in all_recommendations[:10]],
-                quality_assessment=quality_metrics,
-                critique_timestamp=datetime.now(timezone.utc).isoformat()
-            )
-            
-            logger.info(f"Critique completed. Revision needed: {needs_revision}")
-            return critique
-            
-        except Exception as e:
-            logger.error(f"Error in response critique: {e}")
-            raise AdversarialReviewError(f"Response critique failed: {e}")
+Provide concrete strengths, critical issues, and revision recommendations.
+Recommendations must name what to change — never write generic advice like
+"improve quality"."""
 
 
-# Node function for LangGraph integration
-async def critique_response(state: GraphState) -> GraphState:
-    """
-    LangGraph node function for adversarial review of generated responses
-    
-    Args:
-        state: Current graph state containing draft response and claims
-        
-    Returns:
-        GraphState: Updated state with critique results
-    """
-    try:
-        logger.info("Starting adversarial review node")
-        
-        # Extract required data from state
-        draft_response = state.get('draft_response')
-        claims = state.get('claims', [])
-        revision_count = state.get('revision_count', 0)
-        
-        if not draft_response:
-            raise AdversarialReviewError("No draft response found for critique")
-        
-        if not claims:
-            logger.warning("No claims found for context in critique")
-        
-        # Initialize reviewer
-        reviewer = AdversarialReviewer()
-        
-        # Perform critique
-        critique = await reviewer.critique_response(
-            draft_response=draft_response,
-            claims=claims,
-            revision_count=revision_count
+class CritiquePipeline:
+    """Three-stage critique: extract response claims -> web-verify them -> judge."""
+
+    def __init__(self, max_response_claims: int = 3, verification_concurrency: int = 2):
+        self._llm = ChatGoogleGenerativeAI(
+            model=os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite-preview"),
+            temperature=0.1,
+            max_output_tokens=2048,
         )
-        
-        # Update state with critique results
-        updated_state = state.copy()
-        updated_state['critique'] = critique
-        
-        # Update workflow stage based on results
-        if critique['is_revision_needed'] and revision_count < reviewer.max_revisions:
-            updated_state['workflow_stage'] = 'response_drafted'  # Send back for revision
-            updated_state['revision_count'] = revision_count + 1
-            logger.info(f"Revision needed. Iteration {revision_count + 1}")
-        else:
-            updated_state['workflow_stage'] = 'response_reviewed'
-            logger.info("Response approved or max revisions reached")
-        
-        # Update status
-        updated_state['status'] = {
-            'current_step': 'reviewing',
-            'step_progress': 1.0
-        }
-        
-        updated_state['last_updated'] = datetime.now(timezone.utc).isoformat()
-        
-        logger.info("Adversarial review completed successfully")
-        return updated_state
-        
-    except Exception as e:
-        logger.error(f"Error in adversarial review node: {e}")
-        
-        # Update state with error information
-        error_state = state.copy()
-        error_state['error_message'] = f"Adversarial review failed: {str(e)}"
-        error_state['workflow_stage'] = 'failed'
-        error_state['status'] = {
-            'current_step': 'reviewing',
-            'step_progress': 0.0
-        }
-        error_state['last_updated'] = datetime.now(timezone.utc).isoformat()
-        
-        return error_state
+        self._verifier = _ClaimResearchAgent(self._llm, recursion_limit=10)
+        self._verification_semaphore = asyncio.Semaphore(verification_concurrency)
+        self._max_response_claims = max_response_claims
 
+    async def critique(
+        self, draft_response: str, original_claims: List[Claim]
+    ) -> Critique:
+        """Run the full pipeline and return a structured Critique."""
+        if not draft_response or not draft_response.strip():
+            return _empty_critique("Draft response is empty; nothing to review.")
 
-def critique_response_sync(state: GraphState) -> GraphState:
-    """
-    Synchronous wrapper for the adversarial review node
-    
-    Args:
-        state: Current graph state
-        
-    Returns:
-        GraphState: Updated state with critique results
-    """
-    try:
-        # Run the async function in the current event loop or create new one
+        extracted = await self._extract_response_claims(draft_response)
+        logger.info(f"Extracted {len(extracted)} claim(s) from draft response")
+
+        verifications = await self._verify_response_claims(extracted)
+        logger.info(
+            f"Verified {len(verifications)} response claim(s); "
+            f"{sum(1 for v in verifications if v['status'] == 'debunked')} debunked"
+        )
+
+        judgement = await self._judge(draft_response, original_claims, verifications)
+
+        return _build_critique(judgement, verifications)
+
+    async def _extract_response_claims(self, draft_response: str) -> List[str]:
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # If loop is already running, we need to use run_in_executor
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(asyncio.run, critique_response(state))
-                    return future.result()
-            else:
-                return loop.run_until_complete(critique_response(state))
-        except RuntimeError:
-            # No event loop in current thread, create a new one
-            return asyncio.run(critique_response(state))
-            
+            api_usage_manager.check_and_increment_gemini()
+            structured = self._llm.with_structured_output(ExtractedResponseClaims)
+            result = await structured.ainvoke([
+                ("system", _EXTRACT_CLAIMS_PROMPT),
+                ("human", f"Response to analyze:\n\n{draft_response}"),
+            ])
+            claims = [c.text.strip() for c in result.claims if c.text.strip()]
+            return claims[: self._max_response_claims]
+        except APIUsageError:
+            raise
+        except Exception as e:
+            logger.warning(f"Response claim extraction failed: {e}")
+            return []
+
+    async def _verify_response_claims(
+        self, claim_texts: List[str]
+    ) -> List[ResponseClaimVerification]:
+        if not claim_texts:
+            return []
+
+        async def _verify(index: int, text: str) -> ResponseClaimVerification:
+            async with self._verification_semaphore:
+                synthetic_claim: Claim = {  # type: ignore[typeddict-item]
+                    "id": f"resp-{index}",
+                    "text": text,
+                }
+                try:
+                    api_usage_manager.check_and_increment_gemini()
+                    verdict = await self._verifier.adjudicate(synthetic_claim)
+                    return ResponseClaimVerification(
+                        claim=text,
+                        status=verdict.status,
+                        verification_summary=verdict.verification_summary,
+                    )
+                except APIUsageError as e:
+                    logger.warning(f"API limit hit verifying response claim: {e}")
+                    return ResponseClaimVerification(
+                        claim=text,
+                        status="unverifiable",
+                        verification_summary="Verification blocked by API quota limit.",
+                    )
+                except (EvidenceResearchError, Exception) as e:
+                    logger.warning(f"Failed to verify response claim '{text[:60]}': {e}")
+                    return ResponseClaimVerification(
+                        claim=text,
+                        status="unverifiable",
+                        verification_summary=f"Verification failed: {e}",
+                    )
+
+        return await asyncio.gather(
+            *(_verify(i, t) for i, t in enumerate(claim_texts))
+        )
+
+    async def _judge(
+        self,
+        draft_response: str,
+        original_claims: List[Claim],
+        verifications: List[ResponseClaimVerification],
+    ) -> CritiqueJudgement:
+        try:
+            api_usage_manager.check_and_increment_gemini()
+            structured = self._llm.with_structured_output(CritiqueJudgement)
+            user_prompt = (
+                f"DRAFT RESPONSE:\n{draft_response}\n\n"
+                f"{_format_original_claims(original_claims)}\n\n"
+                f"{_format_response_verifications(verifications)}"
+            )
+            return await structured.ainvoke([
+                ("system", _JUDGE_PROMPT),
+                ("human", user_prompt),
+            ])
+        except APIUsageError:
+            raise
+        except Exception as e:
+            logger.error(f"Critique judgement failed: {e}", exc_info=True)
+            raise AdversarialReviewError(f"Failed to produce critique judgement: {e}")
+
+
+# === Helpers ============================================================
+
+def _format_original_claims(claims: List[Claim]) -> str:
+    if not claims:
+        return "ORIGINAL CLAIMS BEING ADDRESSED: (none)"
+    lines = ["ORIGINAL CLAIMS BEING ADDRESSED:"]
+    for i, claim in enumerate(claims, 1):
+        status = claim.get("status")
+        status_value = status.value if hasattr(status, "value") else str(status)
+        verification = (claim.get("verification_summary") or "").strip()
+        lines.append(f"{i}. [{status_value}] {claim.get('text', '')}")
+        if verification:
+            lines.append(f"   Adjudication: {verification}")
+    return "\n".join(lines)
+
+
+def _format_response_verifications(
+    verifications: List[ResponseClaimVerification],
+) -> str:
+    if not verifications:
+        return (
+            "RESPONSE-CLAIM VERIFICATIONS: (no factual assertions were extracted from the response — "
+            "score factual_accuracy based on consistency with the original claim adjudications)"
+        )
+    lines = ["RESPONSE-CLAIM VERIFICATIONS:"]
+    for i, v in enumerate(verifications, 1):
+        lines.append(f'{i}. [{v["status"]}] "{v["claim"]}"')
+        if v.get("verification_summary"):
+            lines.append(f"   {v['verification_summary']}")
+    return "\n".join(lines)
+
+
+def _build_critique(
+    judgement: CritiqueJudgement,
+    verifications: List[ResponseClaimVerification],
+) -> Critique:
+    scores = judgement.scores
+    overall = (
+        scores.factual_accuracy
+        + scores.tone_respectfulness
+        + scores.citation_quality
+    ) / 3.0
+
+    return Critique(
+        is_revision_needed=judgement.is_revision_needed,
+        overall_quality_score=round(overall, 3),
+        quality_scores=CritiqueDimensionScores(
+            factual_accuracy=scores.factual_accuracy,
+            tone_respectfulness=scores.tone_respectfulness,
+            citation_quality=scores.citation_quality,
+        ),
+        strengths=list(judgement.strengths),
+        critical_issues=list(judgement.critical_issues),
+        revision_recommendations=list(judgement.revision_recommendations),
+        response_claim_verifications=list(verifications),
+        critique_timestamp=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+def _empty_critique(reason: str) -> Critique:
+    """Build a passing critique for cases where there's nothing to review."""
+    return Critique(
+        is_revision_needed=False,
+        overall_quality_score=0.0,
+        quality_scores=CritiqueDimensionScores(
+            factual_accuracy=0.0,
+            tone_respectfulness=0.0,
+            citation_quality=0.0,
+        ),
+        strengths=[],
+        critical_issues=[reason],
+        revision_recommendations=[],
+        response_claim_verifications=[],
+        critique_timestamp=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+# === LangGraph node functions ==========================================
+
+async def critique_response(
+    state: GraphState, config: Optional[RunnableConfig] = None
+) -> Dict[str, Any]:
+    """LangGraph node: red-team the draft response with web verification + judgement."""
+    session_id = state.get("session_id")
+    logger.info(f"Starting adversarial review for session {session_id}")
+
+    draft_response = state.get("draft_response", "") or ""
+    claims = state.get("claims", []) or []
+    revision_count = state.get("revision_count", 0)
+    max_revisions = state.get("max_revisions", 2)
+
+    if not draft_response.strip():
+        logger.warning("No draft response to review.")
+        return {
+            "critique": _empty_critique("No draft response was provided."),
+            "workflow_stage": "response_reviewed",
+            "status": {"current_step": "reviewing", "step_progress": 1.0},
+            "last_updated": datetime.now(timezone.utc).isoformat(),
+        }
+
+    try:
+        pipeline = CritiquePipeline()
+        critique = await pipeline.critique(draft_response, claims)
+    except APIUsageError as e:
+        logger.error(f"API limit hit during critique: {e}")
+        return {
+            "critique": _empty_critique(f"Quality review skipped: {e}"),
+            "workflow_stage": "response_reviewed",
+            "status": {"current_step": "reviewing", "step_progress": 1.0},
+            "last_updated": datetime.now(timezone.utc).isoformat(),
+        }
+    except AdversarialReviewError as e:
+        logger.error(f"Adversarial review failed: {e}")
+        return {
+            "critique": _empty_critique(f"Quality review failed: {e}"),
+            "workflow_stage": "response_reviewed",
+            "status": {"current_step": "reviewing", "step_progress": 1.0},
+            "last_updated": datetime.now(timezone.utc).isoformat(),
+        }
+
+    revise = critique["is_revision_needed"] and revision_count < max_revisions
+    next_stage = "response_drafted" if revise else "response_reviewed"
+    new_revision_count = revision_count + 1 if revise else revision_count
+
+    logger.info(
+        f"Critique complete. revision_needed={critique['is_revision_needed']}, "
+        f"overall={critique['overall_quality_score']:.2f}, "
+        f"revising={revise} (count {revision_count}->{new_revision_count})"
+    )
+
+    return {
+        "critique": critique,
+        "workflow_stage": next_stage,
+        "revision_count": new_revision_count,
+        "status": {"current_step": "reviewing", "step_progress": 1.0},
+        "last_updated": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def critique_response_sync(
+    state: GraphState, config: Optional[RunnableConfig] = None
+) -> Dict[str, Any]:
+    """Synchronous wrapper for the adversarial review node."""
+    try:
+        return asyncio.run(critique_response(state, config))
     except Exception as e:
-        logger.error(f"Error in synchronous adversarial review wrapper: {e}")
-        
-        # Return error state
-        error_state = state.copy()
-        error_state['error_message'] = f"Adversarial review synchronous wrapper failed: {str(e)}"
-        error_state['workflow_stage'] = 'failed'
-        error_state['last_updated'] = datetime.now(timezone.utc).isoformat()
-        
-        return error_state 
+        logger.error(f"Synchronous adversarial review failed: {e}", exc_info=True)
+        return {
+            "critique": _empty_critique(f"Quality review failed: {e}"),
+            "workflow_stage": "response_reviewed",
+            "status": {"current_step": "reviewing", "step_progress": 1.0},
+            "last_updated": datetime.now(timezone.utc).isoformat(),
+        }

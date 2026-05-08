@@ -26,11 +26,11 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser, PydanticOutputParser
+from langchain_core.output_parsers import StrOutputParser
 from pydantic import BaseModel, Field, field_validator
 
 # Internal imports
-from ..core.state import GraphState, Claim, Source, ClaimStatus, ResponseQuality
+from ..core.state import GraphState, Claim, Source, ClaimStatus
 from ..utils.api_usage import api_usage_manager, APIUsageError
 
 # Configure logging
@@ -106,11 +106,12 @@ class GeneratedResponse(BaseModel):
     @field_validator('response_text')
     @classmethod
     def validate_response_quality(cls, v):
-        if len(v.strip()) < 30:  # Reduced from 50 to 30 for more reasonable minimum
-            raise ValueError(f"Response too short - must be at least 30 characters, got {len(v.strip())}")
-        if len(v) > 2000:
-            raise ValueError("Response too long - must be under 2000 characters")
-        return v.strip()
+        stripped = v.strip()
+        if len(stripped) < 30:
+            raise ValueError(f"Response too short - must be at least 30 characters, got {len(stripped)}")
+        if len(stripped) > 6000:
+            raise ValueError("Response too long - must be under 6000 characters")
+        return stripped
 
 
 class LLMManager:
@@ -255,7 +256,6 @@ class ResponseGenerator:
             logger.info(f"Claims summary length: {len(claims_summary)} chars")
             logger.info(f"Evidence summary length: {len(evidence_summary)} chars")
             
-            # Enhanced user prompt with stronger length guidance
             user_prompt = f"""Content Summary:
 {content_summary}
 
@@ -265,14 +265,7 @@ Claims to address:
 Available evidence:
 {evidence_summary}
 
-IMPORTANT: Please provide a constructive, detailed fact-checking response that:
-1. Addresses each claim with specific evidence
-2. Uses the provided sources for citations (reference as [SOURCE_X])
-3. Maintains a respectful, educational tone
-4. Must be AT LEAST 100 words long - provide detailed explanations
-5. Include specific facts and context to help readers understand the truth
-
-Your response should be comprehensive and informative, not just a brief statement."""
+Write a single fact-checking response that addresses each claim using the evidence above. Cite sources as [SOURCE_X] where X is the index from the evidence list. Keep the full response under 800 words; one or two short paragraphs per claim is plenty."""
             
             # Create prompt template
             prompt = ChatPromptTemplate.from_messages([
@@ -373,7 +366,14 @@ Your response should be comprehensive and informative, not just a brief statemen
         
         # Extract cited sources
         cited_domains = [source['domain'] for source in all_sources]
-        
+
+        # Defensive guard: the validator caps response_text at 6000 chars. If the
+        # plain-text fallback overflows, truncate at a sentence boundary so the
+        # whole pipeline still produces a usable response instead of throwing.
+        if len(formatted_text) > 6000:
+            truncated = formatted_text[:6000].rsplit(".", 1)[0] or formatted_text[:6000]
+            formatted_text = f"{truncated.rstrip()}…"
+
         return GeneratedResponse(
             response_text=formatted_text,
             tone_assessment=tone,

@@ -37,8 +37,14 @@ def route_claims_analysis_autonomous(state: GraphState) -> Literal["research_cla
         claims = state.get("claims", [])
         if not claims:
             return "generate_response"
-        verified_statuses = {ClaimStatus.VERIFIED, ClaimStatus.DEBUNKED, ClaimStatus.UNVERIFIABLE}
-        all_processed = all(claim.get("status") in verified_statuses for claim in claims)
+        terminal_statuses = {
+            ClaimStatus.VERIFIED,
+            ClaimStatus.DEBUNKED,
+            ClaimStatus.MISLEADING,
+            ClaimStatus.LACKS_CONTEXT,
+            ClaimStatus.UNVERIFIABLE,
+        }
+        all_processed = all(claim.get("status") in terminal_statuses for claim in claims)
         if all_processed:
             return "generate_response"
         return "research_claims"
@@ -56,7 +62,7 @@ def route_after_generation_autonomous(state: GraphState) -> Literal["critique_re
         if not draft_response.strip() or len(draft_response.strip()) < 50:
             return "complete"
         revision_count = state.get("revision_count", 0)
-        max_revisions = state.get("max_revisions", 3)
+        max_revisions = state.get("max_revisions", 2)
         if revision_count >= max_revisions:
             return "complete"
         return "critique_response"
@@ -64,23 +70,26 @@ def route_after_generation_autonomous(state: GraphState) -> Literal["critique_re
         return "complete"
 
 def route_after_critique_autonomous(state: GraphState) -> Literal["generate_response", "complete"]:
-    """Autonomous routing after adversarial review."""
+    """Autonomous routing after adversarial review.
+
+    Note: ``critique_response`` already increments ``revision_count`` when it
+    decides a revision is warranted, so by the time we get here the counter
+    reflects the next pending iteration.
+    """
     try:
         critique = state.get("critique", {})
         if not critique:
             return "complete"
         revision_needed = critique.get("is_revision_needed", False)
         revision_count = state.get("revision_count", 0)
-        max_revisions = state.get("max_revisions", 3)
-        if revision_count >= max_revisions:
+        max_revisions = state.get("max_revisions", 2)
+        if not revision_needed:
             return "complete"
-        if revision_needed:
-            quality = critique.get("quality_assessment", {})
-            overall_score = quality.get("overall_score", 0.5)
-            if overall_score < 0.3:
-                return "complete"
-            return "generate_response"
-        return "complete"
+        if revision_count > max_revisions:
+            return "complete"
+        if critique.get("overall_quality_score", 0.5) < 0.3:
+            return "complete"
+        return "generate_response"
     except Exception:
         return "complete"
 

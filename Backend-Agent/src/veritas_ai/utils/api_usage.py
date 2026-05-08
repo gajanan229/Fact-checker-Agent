@@ -61,7 +61,7 @@ class APIUsageManager:
 
     def check_and_increment_apify(self):
         if self.usage_data['apify']['count'] >= 600:
-            raise APIUsageError("Apify API call limit of 800 reached.")
+            raise APIUsageError("Apify API call limit of 600 reached.")
         self.usage_data['apify']['count'] += 1
         self._save_usage_data()
 
