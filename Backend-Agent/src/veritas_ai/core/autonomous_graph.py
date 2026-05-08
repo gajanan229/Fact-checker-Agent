@@ -37,8 +37,14 @@ def route_claims_analysis_autonomous(state: GraphState) -> Literal["research_cla
         claims = state.get("claims", [])
         if not claims:
             return "generate_response"
-        verified_statuses = {ClaimStatus.VERIFIED, ClaimStatus.DEBUNKED, ClaimStatus.UNVERIFIABLE}
-        all_processed = all(claim.get("status") in verified_statuses for claim in claims)
+        terminal_statuses = {
+            ClaimStatus.VERIFIED,
+            ClaimStatus.DEBUNKED,
+            ClaimStatus.MISLEADING,
+            ClaimStatus.LACKS_CONTEXT,
+            ClaimStatus.UNVERIFIABLE,
+        }
+        all_processed = all(claim.get("status") in terminal_statuses for claim in claims)
         if all_processed:
             return "generate_response"
         return "research_claims"

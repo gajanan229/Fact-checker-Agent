@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, ChevronRight, ExternalLink, AlertCircle, CheckCircle, AlertTriangle } from 'lucide-react';
+import { ChevronDown, ChevronRight, ExternalLink, AlertCircle, CheckCircle, AlertTriangle, HelpCircle } from 'lucide-react';
 
 interface Claim {
-  claim_id: number;
+  claim_id: string;
   text: string;
   status: string;
 }
@@ -12,6 +12,8 @@ interface Source {
   id: number;
   url: string;
   title: string;
+  domain?: string;
+  snippet?: string;
 }
 
 interface DossierEntry {
@@ -26,11 +28,11 @@ interface EvidenceLockerProps {
 }
 
 const EvidenceLocker: React.FC<EvidenceLockerProps> = ({ claims, dossier }) => {
-  const [expandedClaims, setExpandedClaims] = useState<number[]>([]);
+  const [expandedClaims, setExpandedClaims] = useState<string[]>([]);
 
-  const toggleClaim = (claimId: number) => {
-    setExpandedClaims(prev => 
-      prev.includes(claimId) 
+  const toggleClaim = (claimId: string) => {
+    setExpandedClaims(prev =>
+      prev.includes(claimId)
         ? prev.filter(id => id !== claimId)
         : [...prev, claimId]
     );
@@ -39,13 +41,17 @@ const EvidenceLocker: React.FC<EvidenceLockerProps> = ({ claims, dossier }) => {
   const getVerdictColor = (verdict: string) => {
     switch (verdict.toLowerCase()) {
       case 'false':
+      case 'debunked':
         return 'text-red-400 bg-red-400 bg-opacity-20 border-red-400';
       case 'true':
       case 'verified':
         return 'text-green-400 bg-green-400 bg-opacity-20 border-green-400';
       case 'misleading':
       case 'lacks context':
+      case 'lacks_context':
         return 'text-yellow-400 bg-yellow-400 bg-opacity-20 border-yellow-400';
+      case 'unverifiable':
+        return 'text-gray-400 bg-gray-400 bg-opacity-20 border-gray-400';
       default:
         return 'text-gray-400 bg-gray-400 bg-opacity-20 border-gray-400';
     }
@@ -54,15 +60,19 @@ const EvidenceLocker: React.FC<EvidenceLockerProps> = ({ claims, dossier }) => {
   const getVerdictIcon = (verdict: string) => {
     switch (verdict.toLowerCase()) {
       case 'false':
+      case 'debunked':
         return <AlertCircle className="w-4 h-4" />;
       case 'true':
       case 'verified':
         return <CheckCircle className="w-4 h-4" />;
       case 'misleading':
       case 'lacks context':
+      case 'lacks_context':
         return <AlertTriangle className="w-4 h-4" />;
+      case 'unverifiable':
+        return <HelpCircle className="w-4 h-4" />;
       default:
-        return <AlertCircle className="w-4 h-4" />;
+        return <HelpCircle className="w-4 h-4" />;
     }
   };
 
@@ -73,12 +83,12 @@ const EvidenceLocker: React.FC<EvidenceLockerProps> = ({ claims, dossier }) => {
       className="verifyp-card rounded-xl p-6"
     >
       <h3 className="text-lg font-semibold text-gray-100 mb-4">Evidence Locker</h3>
-      
+
       <div className="space-y-3">
-        {claims.map((claim) => {
+        {claims.map((claim, index) => {
           const isExpanded = expandedClaims.includes(claim.claim_id);
-          const evidence = dossier[claim.claim_id.toString()];
-          
+          const evidence = dossier[claim.claim_id];
+
           return (
             <div key={claim.claim_id} className="border border-gray-700 rounded-lg overflow-hidden">
               <button
@@ -89,7 +99,7 @@ const EvidenceLocker: React.FC<EvidenceLockerProps> = ({ claims, dossier }) => {
                   <div className="flex-1">
                     <div className="flex items-center space-x-2 mb-2">
                       <span className="text-sm font-medium text-gray-300">
-                        Claim {claim.claim_id}
+                        Claim {index + 1}
                       </span>
                       {evidence && (
                         <div className={`px-2 py-1 rounded-full border text-xs font-medium flex items-center space-x-1 ${getVerdictColor(evidence.verdict)}`}>
@@ -129,9 +139,9 @@ const EvidenceLocker: React.FC<EvidenceLockerProps> = ({ claims, dossier }) => {
                         {evidence.sources.length > 0 && (
                           <div>
                             <h4 className="text-sm font-medium text-gray-200 mb-2">Sources</h4>
-                            <ul className="space-y-2">
+                            <ul className="space-y-3">
                               {evidence.sources.map((source) => (
-                                <li key={source.id}>
+                                <li key={source.id} className="border-l-2 border-gray-700 pl-3">
                                   <a
                                     href={source.url}
                                     target="_blank"
@@ -141,6 +151,14 @@ const EvidenceLocker: React.FC<EvidenceLockerProps> = ({ claims, dossier }) => {
                                     <span className="truncate">{source.title}</span>
                                     <ExternalLink className="w-3 h-3 flex-shrink-0 group-hover:translate-x-0.5 transition-transform" />
                                   </a>
+                                  {source.domain && (
+                                    <p className="text-xs text-gray-500 mt-0.5">{source.domain}</p>
+                                  )}
+                                  {source.snippet && (
+                                    <p className="text-xs text-gray-400 mt-1 italic line-clamp-3">
+                                      &ldquo;{source.snippet}&rdquo;
+                                    </p>
+                                  )}
                                 </li>
                               ))}
                             </ul>
