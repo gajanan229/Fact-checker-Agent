@@ -3,10 +3,19 @@ This module provides the AnalysisManager class for orchestrating the fact-checki
 """
 import uuid
 import json
+import logging
 import threading
 import time
-from queue import Queue
+from queue import Empty, Queue
 from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
+
+# How long to wait between SSE heartbeats. Edge proxies (Koyeb, Cloudflare,
+# nginx defaults) typically close idle responses after 30-60 seconds, so we
+# emit a comment-only frame well below that threshold whenever the queue is
+# empty. EventSource clients silently ignore these comments.
+SSE_HEARTBEAT_INTERVAL_SECONDS = 15
 
 # A simple in-memory store for session data.
 # In a production environment with multiple server instances, you would replace this
@@ -67,18 +76,36 @@ class AnalysisManager:
     def get_event_stream(self, session_id: str):
         """
         A generator function that yields Server-Sent Events for a session.
+
+        Emits a heartbeat comment when the queue is idle so edge proxies don't
+        close the connection during long-running graph nodes (transcript
+        cleaning, evidence research, and the critique pipeline can each spend
+        well over a minute waiting on Gemini / Tavily without producing any
+        named events).
         """
         event_queue = SESSIONS.get(session_id, {}).get("queue")
         if not event_queue:
             return
 
+        # Initial heartbeat: nudges the EventSource into the open state and
+        # forces any buffering proxy to flush response headers immediately.
+        yield ": connected\n\n"
+
         while True:
-            message = event_queue.get()
+            try:
+                message = event_queue.get(timeout=SSE_HEARTBEAT_INTERVAL_SECONDS)
+            except Empty:
+                logger.debug(
+                    f"Session {session_id}: queue idle, sending SSE heartbeat"
+                )
+                yield ": keepalive\n\n"
+                continue
+
             event_type = message.get("type")
 
             if not event_type or event_type == "end_stream":
                 break
-            
+
             payload = json.dumps(message.get("payload", {}))
             formatted_event = f"event: {event_type}\ndata: {payload}\n\n"
             yield formatted_event

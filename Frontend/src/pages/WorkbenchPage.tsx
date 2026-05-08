@@ -155,22 +155,33 @@ const WorkbenchPage: React.FC = () => {
 
     // Listener for 'update' events
     eventSource.addEventListener('update', (event) => {
-      const eventData = JSON.parse(event.data);
-      const { step, status } = eventData;
-
-      if (status === 'completed') {
-        setState(prev => ({
-          ...prev,
-          progressSteps: prev.progressSteps.map(p =>
-            p.id === step ? { ...p, status: 'completed' } : p
-          )
-        }));
+      if (typeof event.data !== 'string') return;
+      let eventData: { step?: string; status?: 'in_progress' | 'completed' };
+      try {
+        eventData = JSON.parse(event.data);
+      } catch {
+        return;
       }
+      const { step, status } = eventData;
+      if (!step || (status !== 'in_progress' && status !== 'completed')) return;
+
+      setState(prev => ({
+        ...prev,
+        progressSteps: prev.progressSteps.map(p =>
+          p.id === step ? { ...p, status } : p
+        )
+      }));
     });
 
     // Listener for 'complete' event
     eventSource.addEventListener('complete', (event) => {
-      const eventData = JSON.parse(event.data);
+      if (typeof event.data !== 'string') return;
+      let eventData: { caseFile?: CaseFile };
+      try {
+        eventData = JSON.parse(event.data);
+      } catch {
+        return;
+      }
       const caseFile = eventData.caseFile as CaseFile;
 
       if (caseFile && caseFile.error_message) {
@@ -197,19 +208,28 @@ const WorkbenchPage: React.FC = () => {
       eventSource.close();
     });
 
-    // Listener for custom 'error' events from backend (e.g., transcript extraction failures)
-    eventSource.addEventListener('error', (event: MessageEvent) => {
-      const eventData = JSON.parse(event.data);
+    // Listener for custom 'error' events from backend (e.g., transcript extraction failures).
+    // Note: addEventListener('error', ...) ALSO fires for native EventSource connection
+    // failures, where event.data is undefined -- we hand those off to onerror below.
+    eventSource.addEventListener('error', (event: Event) => {
+      const messageEvent = event as MessageEvent;
+      if (typeof messageEvent.data !== 'string') return;
+      let eventData: { message?: string };
+      try {
+        eventData = JSON.parse(messageEvent.data);
+      } catch {
+        return;
+      }
       const errorMessage = eventData.message || 'An error occurred during analysis.';
-      
+
       console.error('Backend error event received:', errorMessage);
-      
+
       setState(prev => ({
         ...prev,
         appStatus: 'error',
         errorMessage: errorMessage
       }));
-      
+
       eventSource.close();
     });
 

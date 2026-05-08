@@ -45,6 +45,17 @@ def run_graph_in_thread(manager: "AnalysisManager", session_id: str, video_url: 
             "generate_response": ("generate_response", "Drafting Response..."),
             "critique_response": ("critique_response", "Performing Quality Review..."),
         }
+        # Order in which nodes can run. After a chunk completes, we look up
+        # the next entry and emit an `in_progress` update so the SSE stream
+        # has frequent activity and the UI can show motion on slow steps.
+        node_order = list(node_to_step_map.keys())
+
+        # Announce the first step as in-progress before we start streaming the
+        # graph so the user sees the pipeline kick off immediately.
+        first_key, first_text = node_to_step_map[node_order[0]]
+        event_queue.put({'type': 'update', 'payload': {
+            "step": first_key, "status": "in_progress", "displayText": first_text
+        }})
 
         for chunk in compiled_graph.stream(initial_state, config):
             node_name = list(chunk.keys())[0]
@@ -57,6 +68,18 @@ def run_graph_in_thread(manager: "AnalysisManager", session_id: str, video_url: 
                 event_queue.put({'type': 'update', 'payload': {
                     "step": step_key, "status": "completed", "displayText": step_text
                 }})
+
+                # If a known successor exists, mark it as in-progress now so
+                # the UI advances and the SSE stream has fresh traffic.
+                try:
+                    next_index = node_order.index(node_name) + 1
+                except ValueError:
+                    next_index = len(node_order)
+                if next_index < len(node_order):
+                    next_key, next_text = node_to_step_map[node_order[next_index]]
+                    event_queue.put({'type': 'update', 'payload': {
+                        "step": next_key, "status": "in_progress", "displayText": next_text
+                    }})
 
         # 3. Process and send the final result
         logging.info(f"Session {session_id}: Graph execution complete. Formatting final state.")

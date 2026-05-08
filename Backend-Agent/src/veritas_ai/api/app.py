@@ -102,8 +102,19 @@ def create_app():
         """
         if not manager.session_exists(session_id):
             return jsonify({"error": "Session not found"}), 404
-        
-        # The 'text/event-stream' mimetype is crucial for SSE
-        return Response(manager.get_event_stream(session_id), mimetype='text/event-stream')
+
+        response = Response(
+            manager.get_event_stream(session_id),
+            mimetype='text/event-stream',
+        )
+        # Disable any intermediate buffering -- both Flask/Werkzeug response
+        # caches and reverse proxies (nginx via X-Accel-Buffering, Koyeb's
+        # edge) need to be told to forward bytes the moment they arrive,
+        # otherwise heartbeats and step events are held until the connection
+        # closes.
+        response.headers['Cache-Control'] = 'no-cache, no-transform'
+        response.headers['X-Accel-Buffering'] = 'no'
+        response.headers['Connection'] = 'keep-alive'
+        return response
 
     return app 
