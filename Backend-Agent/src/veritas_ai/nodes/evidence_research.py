@@ -7,9 +7,8 @@ Each pending claim is run through a deterministic two-call pipeline:
   2. We execute that query against Tavily directly.
   3. The LLM reads the results and commits a structured verdict.
 
-Single-shot calls only, so we never need to round-trip thought_signatures
-back to Gemini 3.x — sidestepping a known langchain-google-genai limitation
-with multi-turn tool-call loops on thinking models.
+Both LLM calls are single-shot structured outputs and run concurrently across
+claims via ``asyncio.gather`` with a bounded semaphore.
 """
 
 from __future__ import annotations
@@ -23,7 +22,7 @@ from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from langchain_core.runnables import RunnableConfig
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 from langchain_tavily import TavilySearch
 from pydantic import BaseModel, Field
 
@@ -170,11 +169,6 @@ class _ClaimResearchAgent:
     Stage 1: ask the LLM to propose one precise search query.
     Stage 2: run Tavily search directly.
     Stage 3: ask the LLM for a verdict given the search results.
-
-    Both LLM calls are single-shot structured outputs, so we never round-trip
-    function-call messages back to the model — this avoids Gemini 3.x's
-    thought_signature requirement, which langchain-google-genai 2.1.6 does
-    not currently preserve across turns.
     """
 
     def __init__(self, llm: Any, recursion_limit: int = 14):
@@ -194,11 +188,14 @@ class _ClaimResearchAgent:
         claim_id = claim.get("id", "?")
 
         try:
-            query_model = self._llm.with_structured_output(_SearchQuery)
-            query: _SearchQuery = await query_model.ainvoke([
+            api_usage_manager.check_and_increment_openai()
+            query_model = self._llm.with_structured_output(_SearchQuery, include_raw=True)
+            query_output = await query_model.ainvoke([
                 ("system", _QUERY_SYSTEM_PROMPT),
                 ("human", f"Claim to fact-check: {claim_text}"),
             ])
+            _record_openai_usage(query_output)
+            query: _SearchQuery = _parsed_or_raise(query_output, "search query", claim_id)
         except APIUsageError:
             raise
         except Exception as e:
@@ -218,9 +215,9 @@ class _ClaimResearchAgent:
         formatted_results = _format_search_results(search_payload)
 
         try:
-            api_usage_manager.check_and_increment_gemini()
-            verdict_model = self._llm.with_structured_output(ClaimVerdict)
-            verdict: ClaimVerdict = await verdict_model.ainvoke([
+            api_usage_manager.check_and_increment_openai()
+            verdict_model = self._llm.with_structured_output(ClaimVerdict, include_raw=True)
+            verdict_output = await verdict_model.ainvoke([
                 ("system", _VERDICT_SYSTEM_PROMPT),
                 (
                     "human",
@@ -231,6 +228,8 @@ class _ClaimResearchAgent:
                     ),
                 ),
             ])
+            _record_openai_usage(verdict_output)
+            verdict: ClaimVerdict = _parsed_or_raise(verdict_output, "verdict", claim_id)
         except APIUsageError:
             raise
         except Exception as e:
@@ -245,20 +244,44 @@ class _ClaimResearchAgent:
         return verdict
 
 
+def _record_openai_usage(chain_output: Any) -> None:
+    """Pull token usage out of a ``with_structured_output(include_raw=True)`` result."""
+    if not isinstance(chain_output, dict):
+        return
+    raw = chain_output.get("raw")
+    if raw is None:
+        return
+    usage = getattr(raw, "usage_metadata", None) or {}
+    api_usage_manager.record_openai_tokens(usage.get("total_tokens", 0))
+
+
+def _parsed_or_raise(chain_output: Any, label: str, claim_id: str):
+    """Extract ``parsed`` from an ``include_raw=True`` chain output."""
+    if isinstance(chain_output, dict):
+        parsed = chain_output.get("parsed")
+        if parsed is None:
+            raise EvidenceResearchError(
+                f"LLM produced no structured {label} for claim {claim_id}"
+            )
+        return parsed
+    return chain_output
+
+
 # === Pipeline ===========================================================
 
 class EvidenceResearcher:
     """Coordinates evidence research across multiple claims with bounded parallelism."""
 
-    def __init__(self, max_concurrent_claims: int = 2):
+    def __init__(self, max_concurrent_claims: int | None = None):
         if not os.getenv("TAVILY_API_KEY"):
             raise EvidenceResearchError("TAVILY_API_KEY environment variable is required")
 
-        self._llm = ChatGoogleGenerativeAI(
-            model=os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite-preview"),
-            temperature=0.1,
-            max_output_tokens=2048,
+        self._llm = ChatOpenAI(
+            model=os.getenv("OPENAI_MODEL", "gpt-5.4-mini-2026-03-17"),
+            temperature=float(os.getenv("OPENAI_TEMPERATURE", "0.1")),
         )
+        if max_concurrent_claims is None:
+            max_concurrent_claims = int(os.getenv("EVIDENCE_RESEARCH_CONCURRENCY", "10"))
         self._semaphore = asyncio.Semaphore(max_concurrent_claims)
         self._agent = _ClaimResearchAgent(self._llm)
 
@@ -277,7 +300,6 @@ class EvidenceResearcher:
         """Run the agent on one claim and merge its verdict back into the claim."""
         updated = claim.copy()
         try:
-            api_usage_manager.check_and_increment_gemini()
             verdict = await self._agent.adjudicate(claim)
 
             updated["status"] = ClaimStatus(verdict.status)

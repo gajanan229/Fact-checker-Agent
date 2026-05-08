@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal
 
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field, field_validator
 
 from ..core.state import Claim, ClaimStatus, GraphState
@@ -66,13 +66,24 @@ class ClaimExtractionResult(BaseModel):
     )
 
 
-_SYSTEM_PROMPT = """You extract verifiable factual claims from short-form video transcripts for a fact-checking pipeline.
+_SYSTEM_PROMPT = """You extract externally verifiable factual claims from short-form video transcripts for a fact-checking pipeline.
 
-Extract every distinct claim that could be checked against external sources -- statistics, dates, named events, scientific or historical assertions, specific cause/effect statements, quotes attributed to people. Prefer recall over precision; the next stage will adjudicate each claim and discard weak ones.
+A claim qualifies only if it is a statement about the world (people, events, statistics, science, history, policy, products, organizations) that could be confirmed or refuted by an independent external source. Among real-world claims, prefer recall over precision -- the downstream stage will adjudicate borderline ones.
 
-Skip only obvious non-claims: pure opinion ("I love it"), rhetorical questions, calls to action, and vague platitudes with no checkable content.
+ALWAYS SKIP these patterns, even when they're phrased as definite statements:
+- First-person statements about the speaker's own life, choices, feelings, intentions, beliefs, regrets, or experiences ("I chose not to vaccinate", "I have no regrets", "I was inspired by X", "I created a podcast", "I won't discount X"). No external source can verify the speaker's inner state or autobiographical details.
+- The speaker's opinions, predictions, framings, or interpretations ("the same patterns repeat", "this is just like Y", "the system is broken"). Opinions don't have a truth value.
+- Rhetorical questions, calls to action, hedged language ("maybe", "some say", "I think"), vague platitudes.
 
-Rewrite each claim as a complete standalone sentence (resolve pronouns, name entities) so it can be researched without the surrounding transcript."""
+UNWRAP attributions. When the transcript says "X said that Y", "the book argued Y", "according to X, Y", "RFK Jr. claimed Y", the claim to extract is Y -- the underlying factual assertion -- NOT the fact that X said it. Drop wrapper phrases like "the speaker says", "the book argues", "X claimed that". Only extract the attribution itself if the disputable part is whether the quote/attribution is real (e.g., a suspected fabricated quote).
+
+Examples:
+- Transcript: "I chose not to vaccinate my kids and I have no regrets."  -> extract NOTHING (autobiographical).
+- Transcript: "RFK Jr. said measles vaccines are a cash cow for Big Pharma."  -> extract "Measles vaccines are a cash cow for the pharmaceutical industry."
+- Transcript: "The book argued that healthcare has been traded in for profit."  -> extract "The U.S. healthcare system prioritizes profit over patient outcomes."
+- Transcript: "Big Pharma is exempt from liability for vaccine harms."  -> extract as-is (genuine policy claim).
+
+Rewrite each claim as a complete standalone sentence -- resolve pronouns, name entities, drop wrapper phrases -- so it can be researched without the surrounding transcript."""
 
 
 class ClaimIdentifier:
@@ -80,10 +91,9 @@ class ClaimIdentifier:
 
     def __init__(self, model_name: str | None = None):
         try:
-            self.llm = ChatGoogleGenerativeAI(
-                model=model_name or os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite-preview"),
-                temperature=0.1,
-                max_output_tokens=4096,
+            self.llm = ChatOpenAI(
+                model=model_name or os.getenv("OPENAI_MODEL", "gpt-5.4-mini-2026-03-17"),
+                temperature=float(os.getenv("OPENAI_TEMPERATURE", "0.1")),
             )
         except Exception as e:
             logger.error(f"Failed to initialize ClaimIdentifier: {e}")
@@ -96,7 +106,10 @@ class ClaimIdentifier:
                 "CONTENT SOURCE: {content_source}\n\nTRANSCRIPT:\n{content_text}",
             ),
         ])
-        self._chain = self._prompt | self.llm.with_structured_output(ClaimExtractionResult)
+        # include_raw=True so we can record token usage from the AIMessage.
+        self._chain = self._prompt | self.llm.with_structured_output(
+            ClaimExtractionResult, include_raw=True
+        )
 
     async def extract_claims_async(
         self,
@@ -108,13 +121,19 @@ class ClaimIdentifier:
             return ClaimExtractionResult(claims=[])
 
         try:
-            api_usage_manager.check_and_increment_gemini()
-            result: ClaimExtractionResult = await self._chain.ainvoke({
+            api_usage_manager.check_and_increment_openai()
+            chain_output = await self._chain.ainvoke({
                 "content_text": content_text.strip(),
                 "content_source": content_source,
             })
+            raw_message = chain_output.get("raw") if isinstance(chain_output, dict) else None
+            if raw_message is not None:
+                usage = getattr(raw_message, "usage_metadata", None) or {}
+                api_usage_manager.record_openai_tokens(usage.get("total_tokens", 0))
+            parsed = chain_output.get("parsed") if isinstance(chain_output, dict) else chain_output
+            result: ClaimExtractionResult = parsed or ClaimExtractionResult(claims=[])
         except APIUsageError as e:
-            logger.error(f"API limit reached for Gemini in claim identification: {e}")
+            logger.error(f"API limit reached for OpenAI in claim identification: {e}")
             raise ValidationError("api_limit", str(e))
         except Exception as e:
             logger.error(f"Claim extraction failed: {e}", exc_info=True)
