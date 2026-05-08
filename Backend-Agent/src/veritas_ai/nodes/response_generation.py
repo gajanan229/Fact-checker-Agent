@@ -26,7 +26,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser, PydanticOutputParser
+from langchain_core.output_parsers import StrOutputParser
 from pydantic import BaseModel, Field, field_validator
 
 # Internal imports
@@ -255,7 +255,6 @@ class ResponseGenerator:
             logger.info(f"Claims summary length: {len(claims_summary)} chars")
             logger.info(f"Evidence summary length: {len(evidence_summary)} chars")
             
-            # Enhanced user prompt with stronger length guidance
             user_prompt = f"""Content Summary:
 {content_summary}
 
@@ -265,14 +264,7 @@ Claims to address:
 Available evidence:
 {evidence_summary}
 
-IMPORTANT: Please provide a constructive, detailed fact-checking response that:
-1. Addresses each claim with specific evidence
-2. Uses the provided sources for citations (reference as [SOURCE_X])
-3. Maintains a respectful, educational tone
-4. Must be AT LEAST 100 words long - provide detailed explanations
-5. Include specific facts and context to help readers understand the truth
-
-Your response should be comprehensive and informative, not just a brief statement."""
+Write a fact-checking response that addresses each claim using the evidence above. Cite sources as [SOURCE_X] where X is the index from the evidence list."""
             
             # Create prompt template
             prompt = ChatPromptTemplate.from_messages([
